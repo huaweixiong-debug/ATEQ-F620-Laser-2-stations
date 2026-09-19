@@ -89,6 +89,17 @@ def test_verify_schema_rejects_missing_tables():
         repo.verify_schema({"info_A": V2_DDL})
 
 
+def test_update_stage2_fallback_without_pending():
+    """防御分支：第一测直接落库（无 pending）时也能合并第二次结果。"""
+    repo = make_repo()
+    record = make_record(first=Result.NG)
+    record.second = None
+    repo.insert_stage1(record)
+    repo.update_stage2("A-1", Measurement(2.0, 0.2, Result.OK, b"F"))
+    merged = repo.get("A-1")
+    assert merged.second is not None and merged.second.pressure == 2.0
+
+
 def test_mark_marked_requires_existing_row():
     repo = make_repo()
     with pytest.raises(KeyError):

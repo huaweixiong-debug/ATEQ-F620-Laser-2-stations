@@ -193,7 +193,9 @@ class PyMySQLRepository:
         with self._lock:
             record = self._pending.pop(cycle_id, None)
             if record is None:
-                # 第一次 NG 的双测周期第一测就已落库（无 pending 条目）。
+                # 防御分支：正常流程第一腔 NG 时仪器终止、不再调用本方法，
+                # 该记录走 insert_stage1 直接落库。若设备行为与预期不符
+                # （第一腔 NG 后仍来了第二次结果），也能合并进同一条记录。
                 record = self.records.get(cycle_id)
                 if record is None:
                     raise KeyError(f"找不到待完成周期: {cycle_id}")

@@ -125,7 +125,9 @@ class StationController:
                 else:
                     self.phase = Phase.MARKING if self.record.test_mode == "single" else Phase.WAIT_2
             else:
-                self.phase = Phase.WAIT_2 if self.record.test_mode == "dual" else Phase.COMPLETE
+                # 第一腔 NG：仪器自身终止检测，不会有第二次测试结果，
+                # 周期立即完成（记录落库、不打码）；单测 NG 同理。
+                self.phase = Phase.COMPLETE
             self._journal()
             return measurement
         except Exception as exc:
@@ -140,7 +142,8 @@ class StationController:
             measurement = self._run_ateq()
             self.record.second = measurement
             self._db_update_stage2(measurement)
-            # 双测：正压、负压都合格才允许打码；任一 NG 直接完成（不打码）。
+            # 正常流程只有第一次 OK 才会进入 WAIT_2/TEST_2；这里的双 OK
+            # 校验是防御性的（仪器行为差异不至于误打码）。
             if (measurement.result is Result.OK
                     and self.record.first is not None
                     and self.record.first.result is Result.OK):

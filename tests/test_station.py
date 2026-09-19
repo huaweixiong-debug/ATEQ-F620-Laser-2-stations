@@ -46,13 +46,23 @@ def test_dual_ok_then_ng_never_marks(station_parts):
     assert marker.intents == set()
 
 
-def test_dual_ng_then_ok_never_marks(station_parts):
-    """用户规则：正压、负压都合格才打码；第一次 NG 即使第二次 OK 也不打码。"""
+def test_dual_first_ng_ends_cycle_immediately(station_parts):
+    """第一腔 NG：仪器自身终止检测，不会有第二次测试结果。
+
+    周期立即完成（记录落库、结果 NG、不打码），第二个测试不允许再发起；
+    下一次 PLC/StepCode 边沿直接开新周期。
+    """
     controller, repository, marker, plc, _ = station_parts
-    run_dual(controller, Result.NG, Result.OK)
+    controller.start_cycle(make_selection(mode="dual"))
+    controller.ateq.result = Result.NG
+    controller.test_first()
     assert controller.phase is Phase.COMPLETE
     assert controller.record.marked is False
     assert marker.intents == set()
+    with pytest.raises(RuntimeError, match="当前状态"):
+        controller.test_second()
+    row = repository.get(controller.record.cycle_id)
+    assert row is not None and row.first.result is Result.NG and row.second is None
 
 
 def test_single_ok_reaches_marking_single_ng_completes(station_parts):
