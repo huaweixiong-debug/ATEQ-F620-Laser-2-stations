@@ -2155,7 +2155,7 @@ class MainWindow(QMainWindow):
             self.calibration_status.setText({"中文": "校准错误：样件顺序无效", "English": "Calibration error: invalid sample order", "Français": "Erreur de calibration : ordre d'échantillon invalide"}[self._language])
     def resolve_recovery(self, station, reason="UI 人工确认"):
         try:
-            self.security.require("recovery_resolve"); card=self.cards[0 if station is StationId.A else 1]; card.controller.resolve_recovery(reason); card.refresh(); self.recovery_status.setText({"中文": f"工位 {station.value} 已审计归档", "English": f"Station {station.value} archived", "Français": f"Poste {station.value} archivé"}[self._language])
+            self.security.require("recovery_resolve"); card=self._card_for_station(station); card.controller.resolve_recovery(reason); card.refresh(); self.recovery_status.setText({"中文": f"工位 {station.value} 已审计归档", "English": f"Station {station.value} archived", "Français": f"Poste {station.value} archivé"}[self._language])
         except Exception: self.recovery_status.setText({"中文": "恢复拒绝：权限不足", "English": "Recovery denied: permission required", "Français": "Récupération refusée : autorisation requise"}[self._language])
 
 
