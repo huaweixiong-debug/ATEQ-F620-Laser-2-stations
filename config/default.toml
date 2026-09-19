@@ -1,0 +1,35 @@
+# 模拟模式默认配置（无硬件副作用）
+mode = "simulate"
+# 本实例控制的工位：A 电脑填 "A"，B 电脑填 "B"
+station = "A"
+plc_ip = "192.168.2.1"
+plc_poll_ms = 100
+# 本工位 ATEQ F620 串口
+ateq_com = "COM6"
+ateq_slave = 255
+ports_confirmed = false
+# PLC 点位表：电气点位表到位并人工核对后，live.toml 中置 points_confirmed = true
+points_confirmed = false
+points_path = "config/points.toml"
+database = "test"
+database_host = "127.0.0.1"
+database_port = 3306
+credential_path = "C:\\ProgramData\\LaserLeakTest\\db.json"
+data_dir = "D:\\data"
+# 激光打码：本机打码软件监听的 TXT 文件
+laser_dir = "D:\\激光打码"
+laser_filename = "激光码信息.txt"
+laser_encoding = "gbk"
+laser_newline = "\r\n"
+# PLC 激光启动位脉冲参数
+laser_hold_seconds = 1.0
+laser_settle_seconds = 0.2
+# 打码后延时自毁清空（秒）
+laser_clear_after_seconds = 10.0
+# 是否等待 PLC 打码完成位（需要点位表提供 laser_done）
+laser_wait_done = false
+laser_done_timeout_s = 10.0
+# 校准/样件周期是否打码（默认不打，仅生产件双合格打码）
+mark_samples = false
+# 打码文本 日期 字段的默认日期方案（型号配置里的"日期"列优先）
+laser_date_scheme = "YYYYMMDD"

@@ -1,0 +1,17 @@
+[project]
+name = "laser-leak-test"
+version = "1.0.0"
+description = "ATEQ F620 双腔气密检测 + 激光打码（单工位实例，A/B 电脑各跑一套）"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.5",
+    "PyMySQL>=1.1",
+    "pyserial>=3.5",
+    "python-snap7>=1.3",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

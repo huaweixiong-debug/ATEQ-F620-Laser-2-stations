@@ -1,0 +1,32 @@
+# 现场实时配置模板：A、B 电脑各一份，仅 station / COM 口 / IP 不同。
+# LIVE 启动前必须完成：
+#   1) points.toml 已按电气点位表填写并逐点核对（points_confirmed = true）
+#   2) ATEQ COM 口与从站地址逐台确认（ports_confirmed = true）
+#   3) MySQL 8.4 已安装、schema v2 已执行、凭据文件已生成
+#   4) 激光打码软件已安装并配置为监听 laser_dir 下的 TXT 文件
+mode = "live"
+# A 电脑填 "A"，B 电脑填 "B"
+station = "A"
+plc_ip = "192.168.2.1"
+plc_poll_ms = 100
+ateq_com = "COM6"
+ateq_slave = 1
+ports_confirmed = false
+points_confirmed = false
+points_path = "config/points.toml"
+database = "test"
+database_host = "127.0.0.1"
+database_port = 3306
+credential_path = "C:\\ProgramData\\LaserLeakTest\\db.json"
+data_dir = "D:\\data"
+laser_dir = "D:\\激光打码"
+laser_filename = "激光码信息.txt"
+laser_encoding = "gbk"
+laser_newline = "\r\n"
+laser_hold_seconds = 1.0
+laser_settle_seconds = 0.2
+laser_clear_after_seconds = 10.0
+laser_wait_done = false
+laser_done_timeout_s = 10.0
+mark_samples = false
+laser_date_scheme = "YYYYMMDD"

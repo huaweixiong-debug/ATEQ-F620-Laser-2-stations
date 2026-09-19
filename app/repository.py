@@ -93,10 +93,10 @@ class PyMySQLRepository:
         for value in normalized.values():
             if not ("PRIMARY KEY" in value and "UNIQUE" in value and "CYCLE_ID" in value):
                 raise RuntimeError("LIVE_BLOCKED: info_A/info_B 缺少主键或 cycle_id 唯一键")
+            if "SERIAL" in value or "2D CODE" in value or "LABELED" in value:
+                raise RuntimeError("LIVE_BLOCKED: info_A/info_B 仍是扫码版表结构，请执行 v2 schema")
             if "MARKED" not in value or "MARK TIME" not in value:
                 raise RuntimeError("LIVE_BLOCKED: info_A/info_B 缺少打码列（marked/Mark Time）")
-            if "SERIAL" in value or "2D CODE" in value:
-                raise RuntimeError("LIVE_BLOCKED: info_A/info_B 仍是扫码版表结构，请执行 v2 schema")
         self._schema_verified = True
 
     def _require_verified(self) -> None:
@@ -131,8 +131,13 @@ class PyMySQLRepository:
 
     @staticmethod
     def _result(record: TraceRecord) -> str:
-        measurement = record.second or record.first
-        return measurement.result.value if measurement else ""
+        # 结果=OK 当且仅当已测的所有阶段全部 OK（正负压双合格才 OK）。
+        measurements = [m for m in (record.first, record.second) if m is not None]
+        if not measurements:
+            return ""
+        if all(m.result is Result.OK for m in measurements):
+            return "OK"
+        return "NG"
 
     @staticmethod
     def _values(record: TraceRecord) -> tuple:
@@ -188,7 +193,11 @@ class PyMySQLRepository:
         with self._lock:
             record = self._pending.pop(cycle_id, None)
             if record is None:
-                raise KeyError(f"找不到待完成周期: {cycle_id}")
+                # 第一次 NG 的双测周期第一测就已落库（无 pending 条目）。
+                record = self.records.get(cycle_id)
+                if record is None:
+                    raise KeyError(f"找不到待完成周期: {cycle_id}")
+                record = deepcopy(record)
             record.second = measurement
             return self._upsert(record)
 

@@ -224,7 +224,7 @@ class LaserMarker(MarkerPort):
         self.date_code_fn = date_code_fn
         self._clock = clock
         self._clear_timer: threading.Timer | None = None
-        self._clear_lock = threading.Lock()
+        self._clear_lock = threading.RLock()  # 重入：_schedule_clear 持锁时调用 _cancel_clear_timer
 
     def mark(self, record: TraceRecord) -> MarkReceipt:
         job_id = f"mark-{record.cycle_id}"

@@ -140,10 +140,16 @@ class StationController:
             measurement = self._run_ateq()
             self.record.second = measurement
             self._db_update_stage2(measurement)
-            if measurement.result is Result.OK and self.record.sample_cycle and not self._sample_marking_enabled():
-                self.phase = Phase.COMPLETE
+            # 双测：正压、负压都合格才允许打码；任一 NG 直接完成（不打码）。
+            if (measurement.result is Result.OK
+                    and self.record.first is not None
+                    and self.record.first.result is Result.OK):
+                if self.record.sample_cycle and not self.mark_samples:
+                    self.phase = Phase.COMPLETE
+                else:
+                    self.phase = Phase.MARKING
             else:
-                self.phase = Phase.MARKING if measurement.result is Result.OK else Phase.COMPLETE
+                self.phase = Phase.COMPLETE
             self._journal()
             return measurement
         except Exception as exc:
