@@ -1,10 +1,13 @@
-"""PLC simulator and Snap7 adapter (reads live, writes gated).
+"""PLC simulator and adapters: S7-200 SMART (snap7), Mitsubishi FX (serial),
+and the FX fake used by simulate/tests.
 
 Point addresses live in ``app/points.py`` + ``config/points.toml``; the
 电气点位表 is a configuration input, not code.
+
+240429 箱体气密封机：FX PLC 直连 COM3（编程口协议，见 fx_protocol.py）。
 """
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from threading import Lock, RLock
 import time
 
@@ -152,3 +155,157 @@ class Snap7Plc:
             return any(self.read_bytes(0, 21))
         except RuntimeError:
             return False
+
+
+class FxSerialPlc:
+    """三菱 FX 编程口适配器（与 Snap7Plc 同一适配接口，点位 M<byte>.<bit>）。
+
+    - 位地址 M<byte>.<bit> 映射为 FX 元件号 byte*8+bit（M 区十进制编号）。
+    - 字读写（D 区，实时重量 D900）走 read_word/write_word。
+    - 写入与 Snap7Plc 一样受 enable_writes() 门禁约束：M 区写权与位所有权
+      必须先和电气程序核对，避免与 PLC 程序双写冲突。
+    - FX 编程口是独占串口：同一时刻只允许一个主站（本程序或老 LabVIEW）。
+    """
+
+    # outputs_energized 的扫描范围：M0..M127（覆盖老机所有结果/复位/屏蔽位）。
+    ENERGIZED_SCAN_BITS = 128
+
+    def __init__(self, port: str, *, baudrate: int = 9600, parity: str = "E",
+                 bytesize: int = 7, stopbits: int = 1, timeout_s: float = 1.0,
+                 serial_factory=None) -> None:
+        self.port = port
+        self.connected = False
+        self._writes_enabled = False
+        self.last_error = ""
+        from .fx_protocol import FxSerialClient
+        self._client = FxSerialClient(
+            port, baudrate=baudrate, parity=parity, bytesize=bytesize,
+            stopbits=stopbits, timeout_s=timeout_s, serial_factory=serial_factory)
+        self._io_lock = RLock()
+
+    def enable_writes(self, approved: bool) -> None:
+        self._writes_enabled = bool(approved)
+
+    def connect(self) -> None:
+        with self._io_lock:
+            try:
+                self._client.connect()
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                self.connected = False
+                raise RuntimeError(f"FX PLC {self.port} 连接失败: {self.last_error}") from exc
+            self.connected = True
+            self.last_error = ""
+
+    def disconnect(self) -> None:
+        self._client.close()
+        self.connected = False
+
+    def _require_connection(self) -> None:
+        if not self.connected:
+            raise RuntimeError("FX PLC 未连接，先调用 connect()")
+
+    def read_bit(self, byte: int, bit: int) -> bool:
+        if not 0 <= bit <= 7:
+            raise ValueError(f"无效位号: {bit}")
+        with self._io_lock:
+            self._require_connection()
+            device = byte * 8 + bit
+            return self._client.read_bits(device, 1)[0]
+
+    def write_bit(self, byte: int, bit: int, value: bool) -> None:
+        if not self._writes_enabled:
+            raise PermissionError("PLC 写入被 capability policy 拒绝")
+        if not 0 <= bit <= 7:
+            raise ValueError(f"无效位号: {bit}")
+        with self._io_lock:
+            self._require_connection()
+            device = byte * 8 + bit
+            try:
+                self._client.write_bits(device, [bool(value)])
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                self.connected = False
+                raise RuntimeError(f"FX PLC {self.port} 写入失败: {self.last_error}") from exc
+
+    def read_word(self, device: int) -> int:
+        with self._io_lock:
+            self._require_connection()
+            return self._client.read_words(device, 1)[0]
+
+    def write_word(self, device: int, value: int) -> None:
+        if not self._writes_enabled:
+            raise PermissionError("PLC 写入被 capability policy 拒绝")
+        if not 0 <= int(value) <= 0xFFFF:
+            raise ValueError(f"字数值超 16 位范围: {value}")
+        with self._io_lock:
+            self._require_connection()
+            try:
+                self._client.write_words(device, [int(value)])
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                self.connected = False
+                raise RuntimeError(f"FX PLC {self.port} 写入失败: {self.last_error}") from exc
+
+    def health(self) -> bool:
+        return bool(self._client.health())
+
+    def safe_stop(self, reason: str) -> None:
+        self._writes_enabled = False
+        self.disconnect()
+
+    def outputs_energized(self) -> bool:
+        try:
+            with self._io_lock:
+                self._require_connection()
+                values = self._client.read_bits(0, self.ENERGIZED_SCAN_BITS)
+            return any(values)
+        except RuntimeError:
+            return False
+
+
+@dataclass
+class FakeFxPlc:
+    """FX 内存模拟器（simulate/单测用）：接口与 FxSerialPlc 一致。"""
+
+    _bits: dict = field(default_factory=dict)
+    _words: dict = field(default_factory=dict)
+    connected: bool = True
+    last_safe_stop: str = ""
+    _writes_enabled: bool = True
+    port: str = "FAKFX"
+
+    def enable_writes(self, approved: bool) -> None:
+        self._writes_enabled = bool(approved)
+
+    def connect(self) -> None:
+        self.connected = True
+
+    def disconnect(self) -> None:
+        pass
+
+    def read_bit(self, byte: int, bit: int) -> bool:
+        return bool(self._bits.get((int(byte), int(bit)), False))
+
+    def write_bit(self, byte: int, bit: int, value: bool) -> None:
+        if not self._writes_enabled:
+            raise PermissionError("PLC 写入被 capability policy 拒绝")
+        self._bits[(int(byte), int(bit))] = bool(value)
+
+    def read_word(self, device: int) -> int:
+        return int(self._words.get(int(device), 0))
+
+    def write_word(self, device: int, value: int) -> None:
+        if not self._writes_enabled:
+            raise PermissionError("PLC 写入被 capability policy 拒绝")
+        self._words[int(device)] = int(value) & 0xFFFF
+
+    def health(self) -> bool:
+        return self.connected
+
+    def safe_stop(self, reason: str) -> None:
+        self._bits.clear()
+        self.last_safe_stop = reason
+
+    def outputs_energized(self) -> bool:
+        return any(self._bits.values())

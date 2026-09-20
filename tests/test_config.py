@@ -96,3 +96,121 @@ def test_repo_config_keys_accepted(tmp_path):
     settings = Settings.from_toml(path)
     assert settings.mode.value == "live"
     assert settings.points_confirmed is False  # 点位表尚未确认，LIVE 预检会拦截
+
+
+# ---------------------------------------------------------------------------
+# 240429 新增配置键：PLC 档位/串口、称重、中转、校准周期
+# ---------------------------------------------------------------------------
+
+def test_new_240429_keys_defaults(tmp_path):
+    settings = Settings.from_toml(write_toml(tmp_path, 'mode = "simulate"\n'))
+    assert settings.plc_profile == "s7"
+    assert settings.plc_com == "COM3"
+    assert settings.plc_baud == 9600
+    assert settings.weight_enabled is False
+    assert settings.weight_register == 40002
+    assert settings.weight_plc_register == "D900"
+    assert settings.plc_relay_host == ""      # 空 = 本机直连 PLC
+    assert settings.relay_enabled is False    # B 侧中转服务默认关闭
+    assert settings.relay_port == 9101
+
+
+def test_fx_profile_and_serial_keys(tmp_path):
+    path = write_toml(tmp_path, '''
+mode = "live"
+plc_profile = "fx"
+plc_com = "COM3"
+plc_baud = 9600
+plc_parity = "E"
+plc_databits = 7
+plc_stopbits = 1
+points_confirmed = true
+ports_confirmed = true
+''')
+    settings = Settings.from_toml(path)
+    assert settings.plc_profile == "fx"
+    assert settings.plc_com == "COM3"
+    assert settings.plc_databits == 7
+
+
+def test_invalid_plc_profile_rejected(tmp_path):
+    path = write_toml(tmp_path, 'plc_profile = "x"\n')
+    with pytest.raises(ValueError, match="plc_profile"):
+        Settings.from_toml(path)
+
+
+def test_invalid_parity_rejected(tmp_path):
+    path = write_toml(tmp_path, 'plc_parity = "X"\n')
+    with pytest.raises(ValueError, match="parity"):
+        Settings.from_toml(path)
+
+
+def test_weight_keys(tmp_path):
+    path = write_toml(tmp_path, '''
+weight_enabled = true
+weight_com = "COM6"
+weight_slave = 2
+weight_register = "40002"
+weight_plc_register = "D900"
+''')
+    settings = Settings.from_toml(path)
+    assert settings.weight_enabled is True
+    assert settings.weight_slave == 2
+    assert settings.weight_plc_register == "D900"
+
+
+def test_invalid_weight_register_rejected(tmp_path):
+    path = write_toml(tmp_path, 'weight_register = "30002"\n')
+    with pytest.raises(ValueError, match="weight_register"):
+        Settings.from_toml(path)
+
+
+def test_invalid_weight_plc_register_rejected(tmp_path):
+    path = write_toml(tmp_path, 'weight_plc_register = "M100"\n')
+    with pytest.raises(ValueError, match="weight_plc_register"):
+        Settings.from_toml(path)
+
+
+def test_relay_client_keys(tmp_path):
+    path = write_toml(tmp_path, '''
+plc_relay_host = "192.168.1.20"
+plc_relay_port = 9101
+plc_relay_token = "xiezhong-240429"
+''')
+    settings = Settings.from_toml(path)
+    assert settings.plc_relay_host == "192.168.1.20"
+    assert settings.plc_relay_port == 9101
+
+
+def test_relay_host_requires_token(tmp_path):
+    path = write_toml(tmp_path, 'plc_relay_host = "192.168.1.20"\n')
+    with pytest.raises(ValueError, match="plc_relay_token"):
+        Settings.from_toml(path)
+
+
+def test_relay_server_requires_token(tmp_path):
+    path = write_toml(tmp_path, 'relay_enabled = true\n')
+    with pytest.raises(ValueError, match="relay_token"):
+        Settings.from_toml(path)
+
+
+def test_relay_server_config_accepted(tmp_path):
+    path = write_toml(tmp_path, '''
+relay_enabled = true
+relay_port = 9202
+relay_token = "xiezhong-240429"
+''')
+    settings = Settings.from_toml(path)
+    assert settings.relay_enabled is True
+    assert settings.relay_port == 9202
+    assert settings.relay_token == "xiezhong-240429"
+
+
+def test_calibration_period_hours_default_8():
+    assert Settings().calibration_period_hours == 8
+
+
+def test_calibration_period_hours_validation(tmp_path):
+    path = write_toml(tmp_path, 'calibration_period_hours = 0\n')
+    with pytest.raises(ValueError, match="calibration_period_hours"):
+        Settings.from_toml(path)

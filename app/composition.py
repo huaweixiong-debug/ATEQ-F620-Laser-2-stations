@@ -6,11 +6,13 @@ from pathlib import Path
 from .models import RunMode, StationId
 from .config import Settings
 from .ateq import FakeAteq, SerialAteq
-from .plc import FakePlc, Snap7Plc
+from .plc import FakePlc, FxSerialPlc, Snap7Plc
+from .plc_relay import PlcRelayServer, RemoteFxPlc
 from .laser import FakeMarker, LaserMarker, LaserChannel, LaserFileWriter
 from .date_codes import DateCodeCatalog
 from .points import PointMap, load_points, sim_point_map
 from .repository import FakeRepository, PyMySQLRepository
+from .weight_scale import WeightScale, WeightService
 
 class ReadOnlyPlc:
     def __init__(self): self._inner = FakePlc()
@@ -62,6 +64,56 @@ def build_date_code_fn(settings: Settings):
     catalog = DateCodeCatalog.from_file(path) if path.is_file() else DateCodeCatalog({})
     return catalog.date_code
 
+def build_plc(settings: Settings):
+    """按配置构建并连接 LIVE PLC 适配器（连接成功后放开写权限）。
+
+    - plc_relay_host 非空：经 B 电脑中转（A 工位部署形态）；
+    - plc_profile = "fx"：三菱 FX 编程口直连（240429，COM3）；
+    - 否则 S7-200 SMART snap7（基线形态）。
+    """
+    if settings.plc_relay_host:
+        plc = RemoteFxPlc(settings.plc_relay_host, settings.plc_relay_port,
+                          token=settings.plc_relay_token)
+        plc.connect()
+        plc.enable_writes(True)
+        return plc
+    if settings.plc_profile == "fx":
+        plc = FxSerialPlc(settings.plc_com, baudrate=settings.plc_baud,
+                          parity=settings.plc_parity, bytesize=settings.plc_databits,
+                          stopbits=settings.plc_stopbits)
+        plc.connect()
+        plc.enable_writes(True)
+        return plc
+    plc = Snap7Plc(settings.plc_ip)
+    plc.connect()
+    plc.enable_writes(True)
+    return plc
+
+
+def build_weight_service(settings: Settings, plc) -> WeightService | None:
+    """称重 -> PLC 字寄存器转发服务（weight_enabled=false 返回 None）。"""
+    if not settings.weight_enabled:
+        return None
+    scale = WeightScale(settings.weight_com, slave=settings.weight_slave,
+                        register=settings.weight_register)
+    scale.connect()
+    plc_device = int(settings.weight_plc_register[1:])
+    service = WeightService(scale, plc, plc_register=plc_device,
+                            poll_s=settings.weight_poll_ms / 1000.0,
+                            writes_enabled=True)
+    service.start()
+    return service
+
+
+def start_relay_service(settings: Settings, plc) -> PlcRelayServer | None:
+    """B 侧 PLC 中转服务（relay_enabled=false 返回 None）。"""
+    if not settings.relay_enabled:
+        return None
+    server = PlcRelayServer(plc, port=settings.relay_port, token=settings.relay_token)
+    server.start()
+    return server
+
+
 def build_services(settings: Settings, station: StationId = StationId.A, *, preflight_passed: bool = False):
     policy = CapabilityPolicy(settings.mode)
     if settings.mode is RunMode.SIMULATE:
@@ -79,9 +131,9 @@ def build_services(settings: Settings, station: StationId = StationId.A, *, pref
                                    user=credentials["user"], password=credentials["password"],
                                    database=settings.database)
     repository.connect_and_verify()
-    plc = Snap7Plc(settings.plc_ip)
-    plc.connect()
-    plc.enable_writes(True)
+    plc = build_plc(settings)
+    start_relay_service(settings, plc)
+    build_weight_service(settings, plc)
     ateq = SerialAteq(settings.ateq_com, station.value, slave=settings.ateq_slave)
     ateq.connect()
     point_map = build_point_map(settings)

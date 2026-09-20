@@ -65,7 +65,16 @@ def run_preflight(settings: Settings, probe_devices: bool = True) -> PreflightRe
     except Exception as exc:
         checks.append(PreflightCheck("PLC 点位表", False, str(exc)))
 
-    checks.append(_tcp("PLC", settings.plc_ip, 102))
+    remote = bool(settings.plc_relay_host)
+    if remote:
+        checks.append(_tcp("PLC 中转", settings.plc_relay_host, settings.plc_relay_port))
+    elif settings.plc_profile == "fx":
+        checks.append(PreflightCheck("PLC 串口配置", True,
+                                     f"FX 直连 {settings.plc_com} "
+                                     f"{settings.plc_baud} {settings.plc_databits}"
+                                     f"{settings.plc_parity}{settings.plc_stopbits}"))
+    else:
+        checks.append(_tcp("PLC", settings.plc_ip, 102))
     if probe_devices:
         try:
             checks.append(_probe_plc_bits(settings))
@@ -87,6 +96,12 @@ def run_preflight(settings: Settings, probe_devices: bool = True) -> PreflightRe
                                          f"{settings.ateq_com}: {type(exc).__name__}: {exc}"))
         finally:
             adapter.close()
+
+    if settings.weight_enabled:
+        if probe_devices:
+            checks.append(_probe_weight(settings))
+        else:
+            checks.append(PreflightCheck("称重", True, f"{settings.weight_com} 配置启用（未探测）"))
 
     # 激光监听目录可写（不触碰已有内容）。
     try:
@@ -129,17 +144,36 @@ def run_preflight(settings: Settings, probe_devices: bool = True) -> PreflightRe
 
 def _probe_plc_bits(settings: Settings) -> PreflightCheck:
     """连接 PLC 并读取启动位与激光启动位（只读），验证点位表可达。"""
-    from .plc import Snap7Plc
-    from .composition import build_point_map
+    from .composition import build_point_map, build_plc
     point_map = build_point_map(settings)
-    plc = Snap7Plc(settings.plc_ip)
+    plc = build_plc(settings)
     try:
-        plc.connect()
         start = point_map.address("start")
         laser_start = point_map.address("laser_start")
         plc.read_bit(*start)
         plc.read_bit(*laser_start)
-        detail = (f"start=M{start[0]}.{start[1]} laser_start=M{laser_start[0]}.{laser_start[1]} 可读")
+        if settings.plc_relay_host:
+            target = f"中转 {settings.plc_relay_host}:{settings.plc_relay_port}"
+        elif settings.plc_profile == "fx":
+            target = settings.plc_com
+        else:
+            target = settings.plc_ip
+        detail = (f"start=M{start[0]}.{start[1]} laser_start=M{laser_start[0]}.{laser_start[1]} 可读（{target}）")
         return PreflightCheck("PLC 点位读回", True, detail)
     finally:
         plc.disconnect()
+
+
+def _probe_weight(settings: Settings) -> PreflightCheck:
+    """只读探测称重 Modbus 设备（读配置寄存器一次，不写 PLC）。"""
+    from .weight_scale import WeightScale
+    scale = WeightScale(settings.weight_com, slave=settings.weight_slave,
+                        register=settings.weight_register, timeout_s=0.8)
+    try:
+        scale.connect()
+        value = scale.read_raw()
+        return PreflightCheck("称重", True,
+                              f"{settings.weight_com} slave={settings.weight_slave} "
+                              f"{settings.weight_register}={value} -> {settings.weight_plc_register}")
+    finally:
+        scale.close()

@@ -99,8 +99,23 @@ python -m venv .venv
 
 ## 当前状态与待办
 
-- [x] 核心层与 UI 改造完成；63 项 pytest 全绿；simulate 冒烟通过
-- [ ] **PLC 电气点位表（稍后提供）** → 填 `config/points.toml`（当前为占位地址）
+- [x] 核心层与 UI 改造完成；pytest 全绿；simulate 冒烟通过
+- [x] **240429 移植适配**（2026-09-20）：FX 编程口协议直连 `FxSerialPlc`（COM3，替代
+      老 LabVIEW+NI OPC Servers 链路）、称重 Modbus `WeightScale`（COM6 40002→PLC D900）、
+      PLC 中转 `PlcRelayServer/RemoteFxPlc`（A 工位经 B 电脑写 PLC）、FX 点位档位
+      `config/points_240429.toml`、A/B 现场配置模板 `config/live_240429_A/B.toml`、
+      校准周期默认 8h；腔序：第一腔=负压、第二腔=正压（硬件时序驱动，两腔全 OK 才打码）
+- [ ] **PLC 电气点位表（稍后提供）** → 确认 `config/points_240429.toml` 的
+      laser_start/laser_done 地址后置 `points_confirmed = true`
 - [ ] 激光打码软件文件格式现场核对（文件名/编码/每行字段顺序/是否需要完成位）
 - [ ] ATEQ 程序号/串口参数逐台确认（沿用 9600 8E1 + 0x30 实时块）
-- [ ] 现场联调：shadow → live 预检 → 小批量试产
+- [ ] 现场联调：shadow → live 预检 → 小批量试产（B 电脑先跑通，再复制到 A 电脑）
+
+### 240429 部署速查
+
+1. **B 电脑**（右工位，PLC 所在机）：`config/live_240429_B.toml` —— FX PLC COM3 直连、
+   ATEQ COM4、称重 COM6→D900、开启 relay_enabled（9101 端口）供 A 中转。
+2. **A 电脑**（左工位）：`config/live_240429_A.toml` —— 本工位 ATEQ COM4 + 本地激光 TXT，
+   `plc_relay_host` 指向 B 电脑 IP，token 与 B 一致；称重由 B 负责。
+3. ⚠️ 联调切换前先退出老 LabVIEW 程序：COM3/COM4 是独占串口，双主站会互相干扰。
+4. 老程序架构与老点位表还原记录见 `docs/240429移植分析.md`。

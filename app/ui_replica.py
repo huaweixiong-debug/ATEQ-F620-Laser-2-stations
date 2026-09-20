@@ -23,6 +23,7 @@ from .journal import CycleJournal
 from .license import LicenseVerifier
 from .permissions import AuthSession, SecurityContext
 from .plc import FakePlc, Snap7Plc
+from .composition import build_plc, build_weight_service, start_relay_service
 from .laser import FakeMarker, LaserMarker, LaserFileWriter, LaserChannel
 from .points import sim_point_map
 from .composition import build_point_map, build_date_code_fn
@@ -889,9 +890,10 @@ class MainWindow(QMainWindow):
             # Live mode is deliberately all-or-nothing for the real services.
             # A fake PLC/DB fallback would make a field test look successful
             # while leaving no trace in the real system.
-            self.real_plc = Snap7Plc(self.settings.plc_ip)
-            self.real_plc.connect()
-            self.real_plc.enable_writes(True)
+            # PLC 适配器按配置选择：S7 snap7 / FX 编程口直连 / 经 B 电脑中转。
+            self.real_plc = build_plc(self.settings)
+            self.weight_service = build_weight_service(self.settings, self.real_plc)
+            self.relay_server = start_relay_service(self.settings, self.real_plc)
             credential_path = self.settings.credential_path
             if not credential_path.is_file():
                 raise RuntimeError(f"MySQL 凭据文件不存在: {credential_path}")
@@ -916,6 +918,8 @@ class MainWindow(QMainWindow):
                 date_code_fn=build_date_code_fn(self.settings))
         else:
             self.real_plc = None
+            self.weight_service = None
+            self.relay_server = None
             self.plc = FakePlc()
             self.repository = FakeRepository(self.settings)
             self.marker = FakeMarker()
@@ -1266,7 +1270,7 @@ class MainWindow(QMainWindow):
         other_card_layout.addWidget(settings_fields, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop); other_card_layout.addStretch(1)
         self.language_selector = QComboBox(); self.language_selector.setObjectName("language_selector"); self.language_selector.setMaximumWidth(230); self.language_selector.addItems(list(UiTextCatalog.LANGUAGES)); self.language_selector.currentTextChanged.connect(self.language_changed)
         global_values = self.global_settings.load()
-        cal_value = global_values.get("校准周期", "02:00:00"); cal_time = QTime.fromString(cal_value, "HH:mm:ss")
+        cal_value = global_values.get("校准周期", "08:00:00"); cal_time = QTime.fromString(cal_value, "HH:mm:ss")
         self.cal_period = QTimeEdit(cal_time if cal_time.isValid() else QTime(0,0)); self.cal_period.setObjectName("calibration_period"); self.cal_period.setMaximumWidth(170); self.cal_period.editingFinished.connect(self._save_global_settings)
         port_text = self.settings.ateq_com if self.settings.ports_confirmed else "BLOCKED/未确认"
         self.ateq_port = QLineEdit(port_text); self.ateq_port.setObjectName("ateq_com"); self.ateq_port.setReadOnly(True); self.ateq_port.setMaximumWidth(240)

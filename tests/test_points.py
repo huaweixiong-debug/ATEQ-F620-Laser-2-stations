@@ -87,3 +87,82 @@ def test_repo_points_toml_loads():
     from pathlib import Path
     point_map = load_points(Path("config/points.toml"))
     assert point_map.has("laser_start")
+
+
+# ---------------------------------------------------------------------------
+# FX 档位（240429 箱体气密封机，三菱 FX 编程口）
+# ---------------------------------------------------------------------------
+
+FX_POINTS_TOML = """
+[meta]
+profile = "fx"
+
+# FX 位元件按 byte.bit 拆分（元件号 = byte*8+bit）：
+#   M0.0=M0  M0.1=M1  M0.5=M5  M58.2=M466  M58.3=M467  M111.3=M891
+[points]
+start = "M0.0"
+result_ok = "M0.1"
+result_ng = "M0.5"
+laser_start = "M30.0"
+laser_done = "M30.1"
+sample = "M58.3"
+isolation_init = "M58.2"
+shield_cylinder = "M111.3"
+"""
+
+
+def test_fx_profile_parses_high_m_addresses(tmp_path):
+    path = tmp_path / "points_fx.toml"
+    path.write_text(FX_POINTS_TOML, encoding="utf-8")
+    point_map = load_points(path)
+    assert point_map.address("start") == (0, 0)
+    assert point_map.address("result_ng") == (0, 5)
+    assert point_map.address("shield_cylinder") == (111, 3)   # M891
+    assert point_map.address("isolation_init") == (58, 2)     # M466
+
+
+def test_fx_profile_allows_up_to_m8191(tmp_path):
+    path = tmp_path / "points_fx.toml"
+    path.write_text(FX_POINTS_TOML + 'extra_unused = "M8191.7"\n', encoding="utf-8")
+    # 未知信号仍然拒绝（extra_unused 不在 FX 信号表里）
+    from app.points import PointMapError
+    with pytest.raises(PointMapError):
+        load_points(path)
+
+
+def test_fx_profile_requires_core_signals(tmp_path):
+    path = tmp_path / "points_fx.toml"
+    path.write_text('[meta]\nprofile = "fx"\n\n[points]\nstart = "M0.0"\n', encoding="utf-8")
+    from app.points import PointMapError
+    with pytest.raises(PointMapError) as excinfo:
+        load_points(path)
+    assert "result_ok" in str(excinfo.value)
+
+
+def test_s7_profile_still_caps_m_area_at_31(tmp_path):
+    path = tmp_path / "points_s7.toml"
+    path.write_text('''
+[meta]
+profile = "s7"
+
+[points]
+start = "M16.0"
+reset = "M0.3"
+calibration = "M1.0"
+ng_sample = "M1.2"
+ok_sample = "M1.3"
+manual = "M2.0"
+block = "M4.2"
+stamp = "M4.6"
+clamp = "M4.4"
+transfer = "M4.0"
+pressure = "M0.5"
+door_disable = "M0.6"
+laser_start = "M20.0"
+''', encoding="utf-8")
+    from app.points import PointMapError
+    load_points(path)  # 合法
+    bad = tmp_path / "points_bad.toml"
+    bad.write_text('[meta]\nprofile = "s7"\n\n[points]\nstart = "M100.0"\n', encoding="utf-8")
+    with pytest.raises(PointMapError):
+        load_points(bad)

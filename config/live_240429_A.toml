@@ -1,0 +1,42 @@
+# ============================================================================
+# 240429 箱体气密封机 —— A 电脑（左工位）现场配置模板
+#
+# A 电脑：本工位 ATEQ COM4 + 本工位激光（本地写打码 TXT）。
+# PLC 不在 A 电脑上：A 的工位信号与激光启动位经局域网由 B 电脑中转写 PLC
+# （plc_relay_host = B 电脑 IP）。部署前提：B 电脑已跑通且 relay_enabled=true。
+# ============================================================================
+
+mode = "live"
+station = "A"
+
+# ---- PLC（经 B 电脑中转，token 必须与 B 电脑 relay_token 一致）----
+plc_relay_host = "192.168.1.20"   # ⚠️ 改成 B 电脑的实际 IP
+plc_relay_port = 9101
+plc_relay_token = "xiezhong-240429"
+points_path = "config/points_240429.toml"
+points_confirmed = false   # laser_start 地址经电气确认后改 true
+
+# ---- 称重：由 B 电脑负责（COM6 接在 B 上），A 不启用 ----
+weight_enabled = false
+
+# ---- ATEQ F620（A 工位自己的串口）----
+ateq_com = "COM4"
+ateq_slave = 1
+ports_confirmed = false    # 逐台确认后改 true
+
+# ---- 数据库 / 数据 / 打码 ----
+database = "test"
+database_host = "127.0.0.1"
+database_port = 3306
+credential_path = "C:\\ProgramData\\LaserLeakTest\\db.json"
+data_dir = "D:\\data"
+laser_dir = "D:\\激光打码"
+laser_filename = "激光码信息.txt"
+laser_encoding = "gbk"
+laser_hold_seconds = 1.0
+laser_clear_after_seconds = 10.0   # 打码文本 10 秒后自毁清空
+mark_samples = false
+laser_date_scheme = "YYYYMMDD"
+
+# NG/OK 样件验证周期（小时）
+calibration_period_hours = 8

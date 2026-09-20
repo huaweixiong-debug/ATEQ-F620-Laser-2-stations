@@ -1,0 +1,55 @@
+# ============================================================================
+# 240429 箱体气密封机 —— B 电脑（右工位）现场配置模板
+#
+# B 电脑：FX PLC 直连 COM3 + 本工位 ATEQ COM4 + 本工位激光 + 称重 COM6。
+# B 同时开启 PLC 中转服务（relay_enabled），供 A 电脑读写 PLC。
+# 先在 B 电脑跑通并验收，再把代码复制到 A 电脑（live_240429_A.toml）。
+# ============================================================================
+
+mode = "live"
+station = "B"
+
+# ---- PLC（三菱 FX 编程口直连）----
+plc_profile = "fx"
+plc_com = "COM3"
+plc_baud = 9600
+plc_parity = "E"
+plc_databits = 7
+plc_stopbits = 1
+points_path = "config/points_240429.toml"
+points_confirmed = false   # laser_start 地址经电气确认后改 true
+
+# ---- B 侧 PLC 中转服务（供 A 电脑经网络读写 PLC）----
+relay_enabled = true
+relay_port = 9101
+relay_token = "xiezhong-240429"   # 与 A 电脑 plc_relay_token 一致
+
+# ---- 称重（COM6 Modbus 40002 -> PLC D900 实时重量）----
+weight_enabled = true
+weight_com = "COM6"
+weight_slave = 1
+weight_register = "40002"
+weight_plc_register = "D900"
+weight_poll_ms = 500
+
+# ---- ATEQ F620（本工位串口）----
+ateq_com = "COM4"
+ateq_slave = 1
+ports_confirmed = false    # 逐台确认后改 true
+
+# ---- 数据库 / 数据 / 打码 ----
+database = "test"
+database_host = "127.0.0.1"
+database_port = 3306
+credential_path = "C:\\ProgramData\\LaserLeakTest\\db.json"
+data_dir = "D:\\data"
+laser_dir = "D:\\激光打码"
+laser_filename = "激光码信息.txt"
+laser_encoding = "gbk"
+laser_hold_seconds = 1.0
+laser_clear_after_seconds = 10.0   # 打码文本 10 秒后自毁清空
+mark_samples = false
+laser_date_scheme = "YYYYMMDD"
+
+# NG/OK 样件验证周期（小时）
+calibration_period_hours = 8

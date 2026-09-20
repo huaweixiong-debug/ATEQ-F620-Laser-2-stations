@@ -110,6 +110,12 @@ class StationController:
         self._journal()
 
     def test_first(self) -> Measurement:
+        """第一腔测试并落库。
+
+        240429 机的腔序是"先负压、后正压"：TEST_1=负压腔，TEST_2=正压腔，
+        周期由 PLC/仪器硬件时序驱动，上位机只按顺序监控两次，两腔全 OK
+        才允许打码；第一腔 NG 时仪器自行终止，周期立即完成（不打码）。
+        """
         self._require(Phase.READY)
         self.phase = Phase.TEST_1
         self.sequence += 1

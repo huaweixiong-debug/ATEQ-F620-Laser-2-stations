@@ -25,6 +25,13 @@ _KNOWN_KEYS = {
     "laser_dir", "laser_filename", "laser_encoding", "laser_newline",
     "laser_hold_seconds", "laser_settle_seconds", "laser_clear_after_seconds",
     "laser_wait_done", "laser_done_timeout_s", "mark_samples", "laser_date_scheme",
+    # 240429 箱体气密封机：PLC 档位/串口、称重、中转、校准周期
+    "plc_profile", "plc_com", "plc_baud", "plc_parity", "plc_databits", "plc_stopbits",
+    "weight_enabled", "weight_com", "weight_slave", "weight_register",
+    "weight_plc_register", "weight_poll_ms",
+    "plc_relay_host", "plc_relay_port", "plc_relay_token",
+    "relay_enabled", "relay_port", "relay_token",
+    "calibration_period_hours",
 }
 
 @dataclass(frozen=True)
@@ -54,6 +61,29 @@ class Settings:
     laser_done_timeout_s: float = 10.0
     mark_samples: bool = False
     laser_date_scheme: str = "YYYYMMDD"
+    # 240429：PLC 档位（s7=S7-200 SMART snap7 / fx=三菱 FX 编程口直连）
+    plc_profile: str = "s7"
+    plc_com: str = "COM3"
+    plc_baud: int = 9600
+    plc_parity: str = "E"
+    plc_databits: int = 7
+    plc_stopbits: int = 1
+    # 称重（COM6 Modbus RTU 40002 -> PLC D900）
+    weight_enabled: bool = False
+    weight_com: str = "COM6"
+    weight_slave: int = 1
+    weight_register: int = 40002
+    weight_plc_register: str = "D900"
+    weight_poll_ms: int = 500
+    # A 侧：PLC 经 B 电脑中转（host 空 = 本机直连）；B 侧：开启中转服务
+    plc_relay_host: str = ""
+    plc_relay_port: int = 9101
+    plc_relay_token: str = ""
+    relay_enabled: bool = False
+    relay_port: int = 9101
+    relay_token: str = ""
+    # NG/OK 样件验证周期（小时），默认 8h，UI 全局设置可改
+    calibration_period_hours: float = 8
     config_source: str = "default.toml"
 
     @classmethod
@@ -117,6 +147,60 @@ class Settings:
             "编码校验".encode(encoding)
         except LookupError as exc:
             raise ValueError(f"无效 laser_encoding: {encoding}") from exc
+
+        # ---- 240429 新键校验 ----
+        plc_profile = str(values.get("plc_profile", "s7")).strip().lower()
+        if plc_profile not in ("s7", "fx"):
+            raise ValueError("plc_profile 必须是 s7 或 fx")
+        plc_com = str(values.get("plc_com", cls.plc_com)).upper()
+        if not re.fullmatch(r"COM[1-9][0-9]*", plc_com):
+            raise ValueError("无效 plc_com COM 口")
+        plc_baud = int(values.get("plc_baud", 9600))
+        if plc_baud not in (1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200):
+            raise ValueError("无效 plc_baud")
+        plc_parity = str(values.get("plc_parity", "E")).strip().upper()
+        if plc_parity not in ("N", "E", "O"):
+            raise ValueError("plc_parity 必须是 N/E/O")
+        plc_databits = int(values.get("plc_databits", 7))
+        plc_stopbits = int(values.get("plc_stopbits", 1))
+        if plc_databits not in (7, 8) or plc_stopbits not in (1, 2):
+            raise ValueError("plc_databits 必须 7/8，plc_stopbits 必须 1/2")
+        weight_enabled = _flag("weight_enabled")
+        weight_com = str(values.get("weight_com", cls.weight_com)).upper()
+        if not re.fullmatch(r"COM[1-9][0-9]*", weight_com):
+            raise ValueError("无效 weight_com COM 口")
+        weight_slave = int(values.get("weight_slave", 1))
+        if not 1 <= weight_slave <= 255:
+            raise ValueError("无效 weight_slave 从站地址")
+        weight_register_raw = values.get("weight_register", cls.weight_register)
+        try:
+            weight_register = int(str(weight_register_raw))
+        except ValueError as exc:
+            raise ValueError("weight_register 必须为 4xxxx 台账地址") from exc
+        if not 40001 <= weight_register <= 465535:
+            raise ValueError("weight_register 必须为 4xxxx 台账地址")
+        weight_plc_register = str(values.get("weight_plc_register", cls.weight_plc_register)).strip().upper()
+        if not re.fullmatch(r"D[0-9]{1,5}", weight_plc_register):
+            raise ValueError("weight_plc_register 必须为 D 字寄存器（如 D900）")
+        weight_poll_ms = int(values.get("weight_poll_ms", 500))
+        if not 50 <= weight_poll_ms <= 60000:
+            raise ValueError("weight_poll_ms 范围 50..60000ms")
+        plc_relay_host = str(values.get("plc_relay_host", "")).strip()
+        plc_relay_port = int(values.get("plc_relay_port", 9101))
+        plc_relay_token = str(values.get("plc_relay_token", ""))
+        relay_enabled = _flag("relay_enabled")
+        relay_port = int(values.get("relay_port", 9101))
+        relay_token = str(values.get("relay_token", ""))
+        for name, port_value in (("plc_relay_port", plc_relay_port), ("relay_port", relay_port)):
+            if not 1024 <= port_value <= 65535:
+                raise ValueError(f"{name} 范围 1024..65535")
+        if plc_relay_host and not plc_relay_token:
+            raise ValueError("配置 plc_relay_host 时必须设置 plc_relay_token")
+        if relay_enabled and not relay_token:
+            raise ValueError("开启 relay_enabled 时必须设置 relay_token")
+        calibration_period_hours = float(values.get("calibration_period_hours", 8))
+        if not 0.1 <= calibration_period_hours <= 720:
+            raise ValueError("calibration_period_hours 范围 0.1..720 小时")
         return cls(mode=RunMode(mode), station=StationId(station_raw), plc_ip=ip, plc_poll_ms=poll,
                    ateq_com=port.upper(), ateq_slave=slave,
                    ports_confirmed=_flag("ports_confirmed"), points_confirmed=_flag("points_confirmed"),
@@ -135,6 +219,18 @@ class Settings:
                    laser_done_timeout_s=done_timeout,
                    mark_samples=_flag("mark_samples"),
                    laser_date_scheme=str(values.get("laser_date_scheme", "YYYYMMDD")),
+                   plc_profile=plc_profile, plc_com=plc_com,
+                   plc_baud=plc_baud, plc_parity=plc_parity,
+                   plc_databits=plc_databits, plc_stopbits=plc_stopbits,
+                   weight_enabled=weight_enabled, weight_com=weight_com,
+                   weight_slave=weight_slave, weight_register=weight_register,
+                   weight_plc_register=weight_plc_register,
+                   weight_poll_ms=weight_poll_ms,
+                   plc_relay_host=plc_relay_host, plc_relay_port=plc_relay_port,
+                   plc_relay_token=plc_relay_token,
+                   relay_enabled=relay_enabled, relay_port=relay_port,
+                   relay_token=relay_token,
+                   calibration_period_hours=calibration_period_hours,
                    config_source=str(path))
 
     def laser_file(self) -> Path:
