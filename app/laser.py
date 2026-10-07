@@ -239,12 +239,8 @@ class LaserMarker(MarkerPort):
             return MarkReceipt(False, job_id, f"打码文件写入失败: {exc}")
         byte, bit = self.point_map.address("laser_start")
         try:
-            self.plc.write_bit(byte, bit, True)
+            self.plc.write_bit(byte, bit, True)  # exactly ONE start pulse attempt
             if not self.plc.read_bit(byte, bit):
-                try:
-                    self.plc.write_bit(byte, bit, False)
-                except Exception:
-                    pass
                 raise RuntimeError(f"激光启动位 M{byte}.{bit} 置位后回读为低")
             self._hold_with_diagnostic(byte, bit)
             self.plc.write_bit(byte, bit, False)
@@ -259,8 +255,18 @@ class LaserMarker(MarkerPort):
                         raise RuntimeError(f"打码完成位 M{done_byte}.{done_bit} 在 {self.done_timeout_s:g} 秒内未置位")
                     time.sleep(0.05)
         except Exception as exc:
+            # P06/BR16/P09: any exception after the single True attempt adds
+            # exactly ONE cleanup False write (the done-timeout path therefore
+            # ends with the write sequence [True, False, False]); never a new
+            # start pulse.  If the cleanup write itself fails, the receipt
+            # records that the start bit is de-energize unconfirmed.
+            unconfirmed = ""
+            try:
+                self.plc.write_bit(byte, bit, False)
+            except Exception as cleanup_exc:
+                unconfirmed = f"；启动位断电未确认: {cleanup_exc}"
             self._schedule_clear()
-            return MarkReceipt(False, job_id, f"激光启动失败: {exc}")
+            return MarkReceipt(False, job_id, f"激光启动失败: {exc}{unconfirmed}")
         self._schedule_clear()
         return MarkReceipt(True, job_id, f"receipt-{job_id}")
 

@@ -149,6 +149,75 @@ def test_calibration_ng_ok_validation(window):
     assert calibration.indicators == (False, False, False)
 
 
+def test_tc26_stepcode_dedup_and_exact_stage_dispatch(window):
+    card = window.cards[0]
+    _release_calibration(window)
+    card.part_no.setCurrentText(PART)
+    calls = []
+    card.first = lambda: calls.append("first")
+    card.second = lambda: calls.append("second")
+    assert window._prepare_stepcode_production_cycle(card) is True
+    assert card.controller.phase is Phase.READY
+    window._handle_live_stepcode(window.station, 4)
+    assert calls == ["first"]
+    # Repeated 4 edge (same level) must not dispatch again.
+    window._handle_live_stepcode(window.station, 4)
+    assert calls == ["first"]
+    # Non-4 step code is ignored but re-arms the edge detector.
+    window._handle_live_stepcode(window.station, 3)
+    assert calls == ["first"]
+    # Next 4 edge dispatches the second test for a WAIT_2 cycle.
+    card.controller.phase = Phase.WAIT_2
+    window._handle_live_stepcode(window.station, 4)
+    assert calls == ["first", "second"]
+    window._handle_live_stepcode(window.station, 4)
+    assert calls == ["first", "second"]
+
+
+def _save_date_scheme(window, scheme="YYMMDD"):
+    window.model_settings.save(ModelConfig(part_no=PART, customer_no=PART,
+                                           date_scheme=scheme, ateq_program="1"))
+
+
+def test_tc27_prepare_stepcode_cycle_freezes_date_scheme(window):
+    card = window.cards[0]
+    _save_date_scheme(window)
+    card.part_no.setCurrentText(PART)
+    assert window._prepare_stepcode_production_cycle(card) is True
+    assert card.controller.record.date_scheme == "YYMMDD"
+    assert card.controller.record.sample_cycle is False
+
+
+def test_tc27_restore_pending_calibration_freezes_date_scheme(window):
+    card = window.cards[0]
+    _save_date_scheme(window)
+    window.calibration[window.station].begin_validation()
+    assert window._restore_pending_calibration_cycle(card) is True
+    assert card.controller.record.date_scheme == "YYMMDD"
+    assert card.controller.record.sample_cycle is True
+
+
+def test_tc27_begin_ok_validation_cycle_freezes_date_scheme(window):
+    card = window.cards[0]
+    _save_date_scheme(window)
+    calibration = window.calibration[window.station]
+    calibration.begin_validation()
+    calibration.sample("NG")
+    assert window._begin_ok_validation_cycle(card) is True
+    assert card.controller.record.date_scheme == "YYMMDD"
+    assert card.controller.record.sample_cycle is True
+
+
+def test_tc27_start_calibration_freezes_date_scheme(window):
+    card = window.cards[0]
+    _save_date_scheme(window)
+    card.part_no.setCurrentText(PART)
+    card.staff.setCurrentText("张三")
+    assert window.start_calibration(window.station) is True
+    assert card.controller.record.date_scheme == "YYMMDD"
+    assert card.controller.record.sample_cycle is True
+
+
 def test_manual_output_permission_and_point_map(window, monkeypatch):
     # UI 实例的 security 默认 operator：手动输出被拒绝。
     with pytest.raises(PermissionError):

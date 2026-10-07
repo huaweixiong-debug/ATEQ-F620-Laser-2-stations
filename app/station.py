@@ -1,9 +1,11 @@
 """Fail-safe, restartable two-stage station state machine (laser marking)."""
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from uuid import uuid4
 
 from .ateq import AteqRequest, AteqResponse
@@ -12,6 +14,65 @@ from .models import (Measurement, Phase, MarkState, RecoveryRecord, Result,
                      StationId, CycleSelection, TraceRecord)
 from .permissions import SecurityContext
 from .contracts import AteqPort, MarkerPort, RepositoryPort, SafeStopPort
+from .workflow import next_phase_after_first, next_phase_after_second
+
+
+def _validate_measurement_for_mark(measurement, label: str) -> None:
+    """BR12: a measurement in the committed row must be finite OK numeric data."""
+    if not isinstance(measurement, Measurement):
+        raise ValueError(f"回读{label}测量类型无效，禁止打码")
+    if measurement.result is not Result.OK:
+        raise ValueError(f"回读{label}测量结果非 OK，禁止打码")
+    for field_name in ("pressure", "leakage"):
+        value = getattr(measurement, field_name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"回读{label}测量 {field_name} 数值无效，禁止打码")
+        if not math.isfinite(float(value)):
+            raise ValueError(f"回读{label}测量 {field_name} 不是有限数值，禁止打码")
+    for unit_name in ("pressure_unit", "leakage_unit"):
+        if not isinstance(getattr(measurement, unit_name), str):
+            raise ValueError(f"回读{label}测量 {unit_name} 单位无效，禁止打码")
+
+
+def validate_committed_for_mark(readback: TraceRecord, frozen_record: TraceRecord,
+                                station: StationId) -> TraceRecord:
+    """P04: validate one committed DB readback, then overlay ONLY frozen metadata.
+
+    schema v2 does not store test_mode/sample_cycle/date_scheme/ateq_program in
+    the database, so those four fields alone are copied from the frozen cycle;
+    all business fields (identity/time/part/person/measurements) come from the
+    committed row.  Returns a deep copy; the caller never gets a shared object.
+    """
+    if not isinstance(readback, TraceRecord):
+        raise ValueError("回读记录类型无效，禁止打码")
+    if readback.station is not station:
+        raise ValueError("回读记录工位不一致，禁止打码")
+    if (not isinstance(readback.cycle_id, str) or not readback.cycle_id.strip()
+            or readback.cycle_id != frozen_record.cycle_id):
+        raise ValueError("回读记录周期身份不一致，禁止打码")
+    if not isinstance(readback.created_at, datetime):
+        raise ValueError("回读记录时间戳无效，禁止打码")
+    if not isinstance(readback.part_no, str) or not readback.part_no.strip():
+        raise ValueError("回读记录型号无效，禁止打码")
+    if not isinstance(readback.person, str) or not readback.person.strip():
+        raise ValueError("回读记录人员无效，禁止打码")
+    if frozen_record.test_mode not in ("single", "dual"):
+        raise ValueError("冻结检测模式无效，禁止打码")
+    if not isinstance(frozen_record.date_scheme, str) or not frozen_record.date_scheme.strip():
+        raise ValueError("冻结日期方案无效，禁止打码")
+    if readback.first is None:
+        raise ValueError("回读记录缺少第一次测量，禁止打码")
+    _validate_measurement_for_mark(readback.first, "第一次")
+    if frozen_record.test_mode == "dual" and readback.second is None:
+        raise ValueError("双测回读记录缺少第二次测量，禁止打码")
+    if readback.second is not None:
+        _validate_measurement_for_mark(readback.second, "第二次")
+    output = deepcopy(readback)
+    output.test_mode = frozen_record.test_mode
+    output.sample_cycle = frozen_record.sample_cycle
+    output.date_scheme = frozen_record.date_scheme
+    output.ateq_program = frozen_record.ateq_program
+    return output
 
 
 class StationController:
@@ -101,6 +162,7 @@ class StationController:
             station=self.station, part_no=selection.product_id.strip(), person=selection.person.strip(),
             cycle_id=cycle_id, ateq_program=(selection.ateq_program or self.program).strip(),
             test_mode=selection.test_mode, sample_cycle=sample,
+            date_scheme=selection.date_scheme,
         )
         self.phase, self.error, self.sequence = Phase.READY, "", 0
         self.mark_state, self.mark_job_id, self.mark_receipt = MarkState.NONE, "", ""
@@ -117,17 +179,11 @@ class StationController:
             measurement = self._run_ateq()
             self.record.first = measurement
             self._db_insert_stage1()
-            if measurement.result is Result.OK:
-                # 双测：两测都合格才进入打码；单测：一次合格即打码。
-                # 样件周期默认不打码（mark_samples 配置可放开）。
-                if self.record.sample_cycle and not self._sample_marking_enabled():
-                    self.phase = Phase.COMPLETE
-                else:
-                    self.phase = Phase.MARKING if self.record.test_mode == "single" else Phase.WAIT_2
-            else:
-                # 第一腔 NG：仪器自身终止检测，不会有第二次测试结果，
-                # 周期立即完成（记录落库、不打码）；单测 NG 同理。
-                self.phase = Phase.COMPLETE
+            # P01 纯决策：BR06 非 OK→COMPLETE；BR07 样件禁打→COMPLETE；
+            # BR08 单测 OK→MARKING，双测 OK→WAIT_2。
+            self.phase = next_phase_after_first(
+                measurement.result, self.record.test_mode,
+                self.record.sample_cycle, self.mark_samples)
             self._journal()
             return measurement
         except Exception as exc:
@@ -142,25 +198,17 @@ class StationController:
             measurement = self._run_ateq()
             self.record.second = measurement
             self._db_update_stage2(measurement)
-            # 正常流程只有第一次 OK 才会进入 WAIT_2/TEST_2；这里的双 OK
-            # 校验是防御性的（仪器行为差异不至于误打码）。
-            if (measurement.result is Result.OK
-                    and self.record.first is not None
-                    and self.record.first.result is Result.OK):
-                if self.record.sample_cycle and not self.mark_samples:
-                    self.phase = Phase.COMPLETE
-                else:
-                    self.phase = Phase.MARKING
-            else:
-                self.phase = Phase.COMPLETE
+            # P02 纯决策：BR09 双 OK→MARKING，任一非 OK/缺失→COMPLETE；
+            # BR10 样件禁打→COMPLETE。双 OK 校验是防御性的。
+            first = self.record.first
+            self.phase = next_phase_after_second(
+                first.result if first is not None else None,
+                measurement.result, self.record.sample_cycle, self.mark_samples)
             self._journal()
             return measurement
         except Exception as exc:
             self._safe_fault(exc, "第二次测试失败")
             raise
-
-    def _sample_marking_enabled(self) -> bool:
-        return self.mark_samples
 
     def _run_ateq(self) -> Measurement:
         program = getattr(self.ateq, "program", "") or self.program
@@ -216,15 +264,19 @@ class StationController:
     def mark(self) -> bool:
         """Laser-marking transaction: only reached when both tests are OK.
 
-        打码内容以数据库提交后的记录回读为准（打的数据=存的数据）。
+        BR11/BR12：打码内容以数据库已提交记录回读为准（打的数据=存的数据）；
+        回读缺失、类型/身份/时间/测量无效或非 OK 时拒绝打码，绝不回退到
+        过程内存记录或缓存 get()。
         """
         self._require(Phase.MARKING)
         self.mark_state = MarkState.INTENT
         self.mark_job_id = f"mark-{self.record.cycle_id}"
         self._journal()
         try:
-            committed = self.repository.get(self.record.cycle_id)
-            marked_record = committed if committed is not None else self.record
+            committed = self.repository.get_committed(self.record.cycle_id)
+            if committed is None:
+                raise RuntimeError("已提交数据库回读缺失，禁止打码")
+            marked_record = validate_committed_for_mark(committed, self.record, self.station)
             receipt = self.marker.mark(marked_record)
             accepted, job_id, receipt_text = self._receipt_values(receipt)
             if not accepted:
@@ -251,7 +303,11 @@ class StationController:
         return True
 
     def remark(self) -> bool:
-        """Admin re-mark of the completed cycle (idempotent re-pulse)."""
+        """Admin re-mark of the completed cycle (a new physical pulse).
+
+        BR19：服务层强制管理员权限；权限检查在任何状态变更或硬件 I/O 之前。
+        """
+        self.security.require("remark")
         if self.phase is not Phase.COMPLETE or self.record is None or not self.record.marked:
             raise RuntimeError("只有已打码完成的周期允许重打码")
         previous_phase = self.phase

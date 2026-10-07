@@ -1098,7 +1098,7 @@ class MainWindow(QMainWindow):
         mode = "dual" if card.mode_button.isChecked() else "single"
         selection = CycleSelection(card.station, part_no,
                                    card.staff.currentText().strip() or "Operator", mode,
-                                   str(config.ateq_program))
+                                   str(config.ateq_program), date_scheme=config.date_scheme)
         card.controller.start_cycle(selection)
         card.refresh()
         self._live_trace(
@@ -1135,7 +1135,8 @@ class MainWindow(QMainWindow):
             return False
         selection = CycleSelection(card.station, part_no,
                                    card.staff.currentText().strip() or "Operator",
-                                   "single", str(config.ateq_program))
+                                   "single", str(config.ateq_program),
+                                   date_scheme=config.date_scheme)
         controller.start_cycle(selection, sample=True)
         card.refresh()
         self._live_trace(
@@ -1174,7 +1175,8 @@ class MainWindow(QMainWindow):
             return False
         selection = CycleSelection(card.station, part_no,
                                    card.staff.currentText().strip() or "Operator",
-                                   "single", str(config.ateq_program))
+                                   "single", str(config.ateq_program),
+                                   date_scheme=config.date_scheme)
         card.controller.start_cycle(selection, sample=True)
         card.refresh()
         self._live_trace(
@@ -2092,7 +2094,8 @@ class MainWindow(QMainWindow):
                     raise
                 selection = CycleSelection(station, part_no,
                                            card.staff.currentText().strip() or "Operator",
-                                           "single", str(config.ateq_program))
+                                           "single", str(config.ateq_program),
+                                           date_scheme=config.date_scheme)
                 controller.start_cycle(selection, sample=True)
                 card.refresh()
                 self._live_trace(f"CAL_CYCLE_READY station={station.value} cycle={controller.record.cycle_id} program={selection.ateq_program}")

@@ -170,3 +170,165 @@ def test_fake_marker_idempotent_intent():
     assert marker.mark(record).accepted
     assert marker.mark(record).accepted
     assert marker.intents == {"mark-" + record.cycle_id}
+
+
+# --------------------------------------------------------------- TC45-TC49
+
+class SpyPlc:
+    """Records every PLC read/write attempt on top of FakePlc state."""
+
+    def __init__(self):
+        self.inner = FakePlc()
+        self.writes = []
+        self.reads = []
+
+    def read_bit(self, byte, bit):
+        self.reads.append((byte, bit))
+        return self.inner.read_bit(byte, bit)
+
+    def write_bit(self, byte, bit, value):
+        self.writes.append((byte, bit, value))
+        self.inner.write_bit(byte, bit, value)
+
+    def health(self):
+        return True
+
+    def outputs_energized(self):
+        return self.inner.outputs_energized()
+
+    def safe_stop(self, reason):
+        self.inner.safe_stop(reason)
+
+
+class ScriptedPlc(SpyPlc):
+    """Raises at a configured 1-based operation index; can force read values."""
+
+    def __init__(self, fail_at=(), forced_reads=None):
+        super().__init__()
+        self.ops = []
+        self.fail_at = set(fail_at)
+        self.forced_reads = dict(forced_reads or {})
+        self._read_index = 0
+
+    def _record(self, op):
+        self.ops.append(op)
+        if len(self.ops) in self.fail_at:
+            raise RuntimeError(f"scripted PLC failure at op {len(self.ops)}")
+
+    def write_bit(self, byte, bit, value):
+        self._record(("write", value))
+        self.inner.write_bit(byte, bit, value)
+
+    def read_bit(self, byte, bit):
+        self._read_index += 1
+        self._record(("read",))
+        if self._read_index in self.forced_reads:
+            return self.forced_reads[self._read_index]
+        return self.inner.read_bit(byte, bit)
+
+
+def test_tc45_file_failure_never_touches_plc(tmp_path):
+    class ExplodingWriter:
+        def publish(self, text):
+            raise LaserFileError("disk full")
+
+        def clear(self):
+            pass
+
+        def verify(self, text):
+            return False
+
+    plc = SpyPlc()
+    marker = LaserMarker(ExplodingWriter(), plc, sim_point_map(), clear_after_seconds=0)
+    receipt = marker.mark(make_record())
+    assert not receipt.accepted
+    assert "打码文件写入失败" in receipt.receipt
+    assert plc.writes == []
+    assert plc.reads == []
+
+
+def test_tc46_single_true_pulse_then_clean_false(tmp_path):
+    writer = make_writer(tmp_path)
+    plc = SpyPlc()
+    marker = LaserMarker(writer, plc, sim_point_map(), hold_seconds=0.0,
+                         settle_seconds=0.0, clear_after_seconds=0)
+    receipt = marker.mark(make_record())
+    assert receipt.accepted
+    assert plc.writes == [(20, 0, True), (20, 0, False)]
+    assert sum(1 for _, _, value in plc.writes if value) == 1
+
+
+TC47_SCENARIOS = [
+    ("fail-write-true", {"fail_at": {1}}),
+    ("fail-read-high", {"fail_at": {2}}),
+    ("readback-low", {"forced_reads": {1: False}}),
+    ("fail-reset-write", {"fail_at": {3}}),
+    ("fail-reset-read", {"fail_at": {4}}),
+    ("reset-readback-high", {"forced_reads": {2: True}}),
+]
+
+
+@pytest.mark.parametrize("label,rules", TC47_SCENARIOS,
+                         ids=[f"TC47-{item[0]}" for item in TC47_SCENARIOS])
+def test_tc47_transaction_failures_cleanup_without_repulse(tmp_path, label, rules):
+    writer = make_writer(tmp_path)
+    plc = ScriptedPlc(**rules)
+    marker = LaserMarker(writer, plc, sim_point_map(), hold_seconds=0.0,
+                         settle_seconds=0.0, clear_after_seconds=0)
+    receipt = marker.mark(make_record())
+    assert not receipt.accepted
+    assert "激光启动失败" in receipt.receipt
+    assert sum(1 for op in plc.ops if op == ("write", True)) == 1
+    assert plc.ops[-1] == ("write", False)  # unified cleanup attempt
+
+
+def test_tc48_failed_cleanup_reports_deenergize_unconfirmed(tmp_path):
+    writer = make_writer(tmp_path)
+    plc = ScriptedPlc(fail_at={3, 4})  # reset write fails, cleanup write fails
+    marker = LaserMarker(writer, plc, sim_point_map(), hold_seconds=0.0,
+                         settle_seconds=0.0, clear_after_seconds=0)
+    receipt = marker.mark(make_record())
+    assert not receipt.accepted
+    assert "断电未确认" in receipt.receipt
+    assert sum(1 for op in plc.ops if op == ("write", True)) == 1
+
+
+class FakeMonotonicClock:
+    """P09: unbounded, strictly increasing fake clock; every call advances.
+
+    A finite iterator is forbidden here: the hold diagnostic also reads the
+    clock, so exhaustion would surface as a generic empty failure instead of
+    the real completion-bit timeout.
+    """
+
+    def __init__(self, start: float = 0.0, increment: float = 0.5) -> None:
+        self._now = start
+        self._increment = increment
+
+    def __call__(self) -> float:
+        self._now += self._increment
+        return self._now
+
+
+def test_tc49_done_timeout_rejected_with_cleanup_no_repulse(tmp_path):
+    writer = make_writer(tmp_path)
+    plc = SpyPlc()
+    clock = FakeMonotonicClock(start=0.0, increment=0.5)  # P09 unbounded clock
+    marker = LaserMarker(writer, plc, sim_point_map(), hold_seconds=0.0,
+                         settle_seconds=0.0, clear_after_seconds=0, wait_done=True,
+                         done_timeout_s=0.1, clock=clock)
+    receipt = marker.mark(make_record())
+    assert receipt.accepted is False
+    # P09: the real deadline was reached and reported as a completion-bit
+    # timeout, not as an empty generic laser failure.
+    assert "激光启动失败" in receipt.receipt
+    assert "完成位" in receipt.receipt and "未置位" in receipt.receipt
+    assert "断电未确认" not in receipt.receipt  # cleanup False succeeded
+    # P09/TC49: exact write sequence -- one start, normal reset, one cleanup.
+    assert plc.writes == [(20, 0, True), (20, 0, False), (20, 0, False)]
+    assert sum(1 for _, _, value in plc.writes if value) == 1
+    assert sum(1 for _, _, value in plc.writes if not value) == 2
+    # The done point was polled while low and left de-energized; no re-pulse.
+    assert (20, 1) in plc.reads
+    assert plc.inner.read_bit(20, 1) is False
+    assert plc.inner.outputs_energized() is False

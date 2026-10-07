@@ -111,7 +111,152 @@ def test_repository_port_methods_complete():
     from app.contracts import RepositoryPort
     repo = make_repo()
     for method in ("insert_stage1", "update_stage2", "row_id", "get",
-                   "mark_marked", "query"):
+                   "mark_marked", "query", "get_committed"):
         assert hasattr(repo, method)
         assert hasattr(PyMySQLRepository, method)
+    assert hasattr(RepositoryPort, "get_committed")
     assert RepositoryPort is not None
+
+
+# ------------------------------------------------------- TC38-TC42 committed
+
+class FakeCursor:
+    def __init__(self, results):
+        self.results = list(results)
+        self.executed = []
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+
+    def fetchone(self):
+        return self.results.pop(0) if self.results else None
+
+    def fetchall(self):
+        values, self.results = self.results, []
+        return values
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class FakeConnection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.commits = 0
+        self.rollbacks = 0
+
+    def cursor(self):
+        return self._cursor
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def db_row(cycle_id="A-DB-1", part="P-DB", person="OP-DB", result="OK", marked=0,
+           mark_time=None, created=None):
+    from datetime import datetime
+    return (created or datetime(2026, 10, 7, 1, 2, 3), part, person,
+            500.0, "Kpa", 0.1, "ml/min", -45.0, "Kpa", 0.2, "ml/min",
+            result, marked, mark_time, cycle_id)
+
+
+def make_mysql_repo() -> PyMySQLRepository:
+    repo = PyMySQLRepository(host="127.0.0.1", user="u", password="p", database="test")
+    repo.verify_schema({"info_A": V2_DDL, "info_B": V2_DDL})
+    return repo
+
+
+def test_tc38_mysql_get_committed_selects_db_and_ignores_cache(monkeypatch):
+    repo = make_mysql_repo()
+    repo.records["A-DB-1"] = make_record()  # polluted UI cache must not be used
+    cursor = FakeCursor([db_row(cycle_id="A-DB-1", part="FROM-DB"), None])
+    connection = FakeConnection(cursor)
+    monkeypatch.setattr(repo, "_connect", lambda: connection)
+    record = repo.get_committed("A-DB-1")
+    assert record is not None
+    assert record.part_no == "FROM-DB"
+    assert record.cycle_id == "A-DB-1"
+    assert len(cursor.executed) == 2  # unknown mapping: both tables searched
+    for sql, params in cursor.executed:
+        assert sql.lstrip().upper().startswith("SELECT")
+        assert params == ("A-DB-1",)
+    assert "records" not in cursor.executed[0][0]
+
+
+def test_tc38_mysql_get_committed_uses_known_table_mapping(monkeypatch):
+    repo = make_mysql_repo()
+    repo._cycle_station["A-DB-1"] = "info_A"
+    cursor = FakeCursor([db_row(cycle_id="A-DB-1", part="MAPPED")])
+    monkeypatch.setattr(repo, "_connect", lambda: FakeConnection(cursor))
+    assert repo.get_committed("A-DB-1").part_no == "MAPPED"
+    assert len(cursor.executed) == 1
+    assert "info_A" in cursor.executed[0][0]
+
+
+def test_tc39_unknown_mapping_only_station_b_row_is_returned(monkeypatch):
+    repo = make_mysql_repo()
+    cursor = FakeCursor([None, db_row(cycle_id="B-X", part="B-PART")])
+    monkeypatch.setattr(repo, "_connect", lambda: FakeConnection(cursor))
+    record = repo.get_committed("B-X")
+    assert record is not None
+    assert record.station is StationId.B
+    assert record.part_no == "B-PART"
+    assert any("info_A" in sql for sql, _ in cursor.executed)
+    assert any("info_B" in sql for sql, _ in cursor.executed)
+
+
+def test_tc40_duplicate_cycle_identity_across_tables_rejected(monkeypatch):
+    repo = make_mysql_repo()
+    cursor = FakeCursor([db_row(cycle_id="DUP-1"), db_row(cycle_id="DUP-1")])
+    monkeypatch.setattr(repo, "_connect", lambda: FakeConnection(cursor))
+    with pytest.raises(RuntimeError, match="歧义"):
+        repo.get_committed("DUP-1")
+
+
+def test_tc41_fake_committed_snapshot_isolated_from_process_record():
+    repo = make_repo()
+    record = make_record(mode="single", first=Result.OK)
+    record.second = None
+    repo.insert_stage1(record)
+    snapshot = repo.get_committed("A-1")
+    assert snapshot.part_no == "P1"
+    # Mutating the live process record after insert must not change the snapshot.
+    record.part_no = "CHANGED"
+    record.first = Measurement(99.0, 9.9, Result.OK, b"X")
+    again = repo.get_committed("A-1")
+    assert again.part_no == "P1"
+    assert again.first.pressure == 1.0
+    # The returned object is a deep copy: mutating it cannot pollute the store.
+    again.part_no = "MUTATED"
+    assert repo.get_committed("A-1").part_no == "P1"
+
+
+def test_tc42_fake_committed_updates_only_on_explicit_commits():
+    repo = make_repo()
+    record = make_record(mode="dual")
+    record.second = None
+    repo.insert_stage1(record)
+    assert repo.get_committed("A-1").second is None
+    repo.update_stage2("A-1", Measurement(2.0, 0.2, Result.OK, b"F"))
+    committed = repo.get_committed("A-1")
+    assert committed.second is not None and committed.second.pressure == 2.0
+    assert committed.marked is False
+    repo.mark_marked("A-1")
+    assert repo.get_committed("A-1").marked is True
+    assert repo.get("A-1").marked is True
+
+
+def test_fake_committed_missing_cycle_returns_none():
+    assert make_repo().get_committed("missing") is None

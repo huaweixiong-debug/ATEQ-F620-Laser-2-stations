@@ -131,12 +131,17 @@ class TraceRecord:
 
 @dataclass(frozen=True)
 class CycleSelection:
-    """Immutable model/operator snapshot frozen when a hardware cycle starts."""
+    """Immutable model/operator snapshot frozen when a hardware cycle starts.
+
+    ``date_scheme`` is a trailing compatible field: existing five-positional
+    callers keep working and the value is stripped before it is frozen.
+    """
     station: StationId
     product_id: str
     person: str
     test_mode: str
     ateq_program: str
+    date_scheme: str = "YYYYMMDD"
 
     def __post_init__(self) -> None:
         if self.test_mode not in ("single", "dual"):
@@ -144,6 +149,9 @@ class CycleSelection:
         required = (self.product_id, self.person, self.ateq_program)
         if any(not str(value).strip() for value in required):
             raise ValueError("周期冻结数据不完整")
+        if not isinstance(self.date_scheme, str) or not self.date_scheme.strip():
+            raise ValueError(f"日期方案无效: {self.date_scheme!r}")
+        object.__setattr__(self, "date_scheme", self.date_scheme.strip())
 
 
 class MarkState(str, Enum):

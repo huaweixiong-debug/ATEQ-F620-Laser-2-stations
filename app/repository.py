@@ -19,6 +19,9 @@ class FakeRepository:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.records: dict[str, TraceRecord] = {}
+        # 已提交快照与 legacy records 分离：仅在 insert/update/mark 时深拷贝，
+        # 后续对过程记录的改动不影响打码回读（get_committed 的提交语义）。
+        self._committed: dict[str, TraceRecord] = {}
         self._lock = Lock()
         self._row_ids: dict[str, int] = {}
         self._next_row_id = 1
@@ -31,6 +34,7 @@ class FakeRepository:
                 self.records[record.cycle_id] = record
                 self._row_ids[record.cycle_id] = self._next_row_id
                 self._next_row_id += 1
+            self._committed[record.cycle_id] = deepcopy(self.records[record.cycle_id])
             return self.records[record.cycle_id]
 
     def row_id(self, cycle_id: str) -> int | None:
@@ -42,6 +46,7 @@ class FakeRepository:
         with self._lock:
             record = self.records[cycle_id]
             record.second = measurement
+            self._committed[cycle_id] = deepcopy(record)
             return record
 
     def mark_marked(self, cycle_id: str, capability: LiveCapability | None = None) -> None:
@@ -51,11 +56,18 @@ class FakeRepository:
             record = self.records[cycle_id]
             record.marked = True
             record.marked_at = datetime.now(timezone.utc)
+            self._committed[cycle_id] = deepcopy(record)
 
     def get(self, cycle_id: str) -> TraceRecord | None:
         with self._lock:
             record = self.records.get(cycle_id)
             return deepcopy(record) if record is not None else None
+
+    def get_committed(self, cycle_id: str) -> TraceRecord | None:
+        """Return a deep copy of the last explicitly committed snapshot (or None)."""
+        with self._lock:
+            snapshot = self._committed.get(cycle_id)
+            return deepcopy(snapshot) if snapshot is not None else None
 
     def count_ok(self) -> int:
         return sum(1 for row in self.records.values() if row.second and row.second.result is Result.OK)
@@ -241,6 +253,34 @@ class PyMySQLRepository:
                 cursor.execute(self._select_sql(table) + " WHERE `cycle_id`=%s", (cycle_id,))
                 values = cursor.fetchone()
         return self._row_to_record(table, values) if values else None
+
+    def get_committed(self, cycle_id: str) -> TraceRecord | None:
+        """BR11: always SELECT from the real database; never records/_pending.
+
+        Unknown cycle-to-table mappings search both station tables and reject a
+        duplicate cycle identity instead of arbitrarily picking one row.
+        """
+        self._require_verified()
+        with self._lock:
+            if cycle_id in self._cycle_station:
+                tables = [self._cycle_station[cycle_id]]
+            else:
+                tables = list(_TABLES)
+            found: list[tuple[str, tuple]] = []
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    for table in tables:
+                        cursor.execute(self._select_sql(table) + " WHERE `cycle_id`=%s",
+                                       (cycle_id,))
+                        values = cursor.fetchone()
+                        if values:
+                            found.append((table, values))
+            if len(found) > 1:
+                raise RuntimeError(f"周期身份歧义：cycle_id={cycle_id} 同时命中 {len(found)} 张表")
+            if not found:
+                return None
+            table, values = found[0]
+            return self._row_to_record(table, values)
 
     @staticmethod
     def _select_sql(table: str, where: str = "") -> str:
