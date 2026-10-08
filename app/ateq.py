@@ -438,7 +438,9 @@ class SerialAteq:
                 else:
                     raise RuntimeError(f"ATEQ 周期结束但结果位不明确: 0x{status:04X}")
                 if step6_registers is None:
-                    raise RuntimeError("ATEQ 周期结束但未在 StepCode=6 期间采到压力值")
+                    raise RuntimeError(
+                        "ATEQ 周期结束但未在 StepCode=6 期间采到压力值; "
+                        f"timeline: {' | '.join(step_timeline[-8:])}")
                 pressure = self._signed32_from_words(step6_registers[5], step6_registers[6]) / 1000.0
                 pressure_unit = self._unit_from_words(step6_registers[7], step6_registers[8])
                 # 泄漏值取 StepCode 从 6 变为 65525 之后的结束帧寄存器。

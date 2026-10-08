@@ -1020,6 +1020,7 @@ class MainWindow(QMainWindow):
         self.pressure_alarm_timer.timeout.connect(self._poll_pressure_alarm)
         self.pressure_alarm_timer.start()
         self._last_live_stepcode = None
+        self._b_test_in_progress = False
         self.cards[0].stepcode_updated.connect(lambda value: self._remember_live_stepcode(self.station, value))
         # Configuration diagnostics only; physical cycles are dispatched
         # exclusively by the ATEQ StepCode=4 hardware edge.
@@ -1181,6 +1182,9 @@ class MainWindow(QMainWindow):
         previous = getattr(self, "_last_live_stepcode", None)
         self._last_live_stepcode = step_code
         card.set_stepcode(step_code)
+        if step_code != previous:
+            # 记录每次 StepCode 变化，供远程诊断 ATEQ 周期时序。
+            self._live_trace(f"ATEQ_STEP station={station.value} code={step_code}")
         if step_code != 4 or previous == 4:
             return
         phase = card.controller.phase
