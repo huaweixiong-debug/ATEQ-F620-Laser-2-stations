@@ -104,6 +104,8 @@ class SerialAteq:
         self.stepcode_callback = None
         # 正压保压判定钩子：StepCode 变为 5 时调用一次；抛异常即中止本次监视。
         self.step5_check = None
+        # 外部中止钩子（PLC 面板复位等）：每轮调用；抛异常即中止本次监视。
+        self.abort_check = None
         self._last_reported_stepcode: int | None = None
 
     def connect(self) -> None:
@@ -398,6 +400,8 @@ class SerialAteq:
         t0 = time.monotonic()
         step5_checked = False
         while time.monotonic() < deadline:
+            if self.abort_check is not None:
+                self.abort_check()
             registers, raw = self.read_registers(self.REALTIME_ADDRESS, self.REALTIME_COUNT)
             last_frame = raw
             step_code = self._swap16(registers[4])

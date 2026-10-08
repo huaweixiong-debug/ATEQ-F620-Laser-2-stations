@@ -62,3 +62,14 @@ def test_stepcode_callback_receives_every_change():
     ateq.stepcode_callback = seen.append
     ateq.run(_request())
     assert seen == [4, 5, 6, 65535]
+
+
+def test_abort_check_stops_monitoring():
+    ateq = _StubAteq([4, 5, 5, 6, 65535])
+
+    def abort():
+        raise RuntimeError("PLC 复位（面板按钮），终止监视")
+
+    ateq.abort_check = abort
+    with pytest.raises(RuntimeError, match="PLC 复位"):
+        ateq.run(_request())

@@ -169,6 +169,8 @@ class StationPanel(QFrame):
                 lambda code: self.stepcode_updated.emit(str(code)))
         if hasattr(self.controller.ateq, "step5_check"):
             self.controller.ateq.step5_check = self._positive_hold_guard
+        if hasattr(self.controller.ateq, "abort_check"):
+            self.controller.ateq.abort_check = self._plc_reset_abort_check
         self._pressure_trip_seconds = 2.0
         self._pressure_window_seconds = 5.0
         self._pressure_on_seconds = 1.0
@@ -517,6 +519,11 @@ class StationPanel(QFrame):
     def _calibration(self):
         return self.calibration_provider(self.station) if self.calibration_provider else None
 
+    def _plc_reset_abort_check(self) -> None:
+        """PLC 面板复位（A=M0.0 / B=M0.3）请求期间：立即中止本工位监视。"""
+        if getattr(self.window(), "_plc_reset_pending", False):
+            raise RuntimeError("PLC 复位（面板按钮），终止监视")
+
     def _positive_hold_guard(self) -> None:
         """正压保压判定：StepCode=5 后的窗口内需确认开关 ON 持续 1 秒。
 
@@ -753,6 +760,11 @@ class StationPanel(QFrame):
             trace = getattr(self.window(), "_live_trace", None)
             if trace is not None:
                 trace(f"{self.station.value} FINISH_TEST_FAILED {type(exc).__name__}: {exc}")
+        finally:
+            # 测试期间收到 PLC 面板复位：等 worker 收尾后统一落地复位。
+            window = self.window()
+            if getattr(window, "_plc_reset_pending", False):
+                window._apply_plc_reset()
 
     def _handle_calibration_measurement(self):
         calibration = self._calibration()
@@ -1134,13 +1146,19 @@ class MainWindow(QMainWindow):
         self.pressure_alarm_timer.setInterval(2000)
         self.pressure_alarm_timer.timeout.connect(self._poll_pressure_alarm)
         self.pressure_alarm_timer.start()
+        self.plc_reset_timer = QTimer(self)
+        self.plc_reset_timer.setInterval(200)
+        self.plc_reset_timer.timeout.connect(self._poll_plc_reset)
         self._last_live_stepcode = None
         self._b_test_in_progress = False
+        self._plc_reset_pending = False
+        self._last_reset_bit = None
         self.cards[0].stepcode_updated.connect(lambda value: self._remember_live_stepcode(self.station, value))
         # Configuration diagnostics only; physical cycles are dispatched
         # exclusively by the ATEQ StepCode=4 hardware edge.
         if self.live_mode:
             self.ateq_heartbeat_timer.start()
+            self.plc_reset_timer.start()
         self.calibration_status.setText("校准到期，请点击启动验证")
         self.laser_status.setText(self._laser_status_text())
         initial_titles = {"clamp": "夹紧 / Clamp / Serrage", "transfer": "移载 / Transfer / Transfert", "block": "封堵 / Blocking / Obstruction", "stamp": "盖章 / Stamp / Timbre", "door_disable": "安全门使能/禁用 / Door enable/disable", "manual": "自动/手动 / Automatic/Manual"}
@@ -1264,6 +1282,53 @@ class MainWindow(QMainWindow):
             getattr(self, "_last_live_stepcode", None) == 5
             and card.controller.phase is Phase.TEST_2)
         card.set_pressure_alarm(in_positive_hold and not normal)
+
+    def _poll_plc_reset(self):
+        """PLC 面板复位（A=M0.0 / B=M0.3）：上升沿→清报警并复位未完成周期。"""
+        card = self.cards[0]
+        if not card.point_map.has("start"):
+            return
+        byte, bit = card.point_map.address("start")
+        try:
+            current = bool(card.plc.read_bit(byte, bit))
+        except Exception:
+            return  # 读失败不动作，下个周期再试
+        previous = self._last_reset_bit
+        self._last_reset_bit = current
+        if previous is None or not current or previous:
+            return  # 仅 0→1 上升沿；启动时只记录初值
+        self._live_trace(f"PLC_RESET station={self.station.value} M{byte}.{bit} 0->1")
+        if getattr(card, "_test_worker_running", False):
+            self._plc_reset_pending = True
+            self._live_trace(
+                f"PLC_RESET_DEFERRED station={self.station.value} 测试进行中，终止监视后复位")
+            return
+        self._apply_plc_reset()
+
+    def _apply_plc_reset(self):
+        """面板复位落地：清上位机报警 + 归档未完成周期 + 重连 PLC 恢复写权限。"""
+        self._plc_reset_pending = False
+        card = self.cards[0]
+        controller = card.controller
+        try:
+            if controller.recovery_required:
+                controller.resolve_recovery(
+                    f"PLC 复位 {self.station.value}", require_permission=False)
+            else:
+                controller.reset()
+                if controller.recovery_required:
+                    # 活动周期被安全中止：按面板复位意图立即归档
+                    controller.resolve_recovery(
+                        f"PLC 复位 {self.station.value}", require_permission=False)
+            card._error_key = None
+            card.reconnect_plc()
+            card.refresh()
+            card.changed_callback()
+            self._live_trace(
+                f"PLC_RESET_APPLIED station={self.station.value} phase={controller.phase.value}")
+        except Exception as exc:
+            self._live_trace(
+                f"PLC_RESET_FAILED station={self.station.value} {type(exc).__name__}: {exc}")
 
     def _ateq_heartbeat(self):
         """Keep the F620 Modbus session alive with a read-only status poll."""

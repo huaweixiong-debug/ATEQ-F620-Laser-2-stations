@@ -599,6 +599,56 @@ def test_pressure_alarm_hidden_outside_step5(window):
     assert card.pressure_alarm_label.isHidden() is True
 
 
+def _reset_window(window, tmp_path):
+    import dataclasses as dc
+
+    card = window.cards[0]
+    points = dc.replace(card.point_map, addresses={
+        **card.point_map.addresses, "start": (0, 0)})
+    card.point_map = points
+    window.point_map = points
+    window.live_mode = True
+    window.live_trace_path = tmp_path / "live_trace.log"
+    window._last_reset_bit = False
+    window._plc_reset_pending = False
+    card.controller.recovery_required = True
+    card.controller.phase = Phase.FAULT
+    card._error_key = "second_error"
+    return card
+
+
+def test_plc_reset_edge_clears_alarm_and_unfinished_cycle(window, tmp_path):
+    card = _reset_window(window, tmp_path)
+    window.plc.write_bit(0, 0, True)          # PLC 复位上升沿
+    window._poll_plc_reset()
+    assert card.controller.recovery_required is False
+    assert card.controller.phase is Phase.IDLE
+    assert card._error_key is None
+    trace_text = (tmp_path / "live_trace.log").read_text(encoding="utf-8")
+    assert "PLC_RESET_APPLIED" in trace_text
+
+
+def test_plc_reset_ignores_level_at_startup(window, tmp_path):
+    card = _reset_window(window, tmp_path)
+    window._last_reset_bit = None
+    window.plc.write_bit(0, 0, True)          # 启动时已为高（残留/按住）
+    window._poll_plc_reset()
+    assert card.controller.recovery_required is True   # 不动作
+    assert window._last_reset_bit is True
+
+
+def test_plc_reset_defers_during_active_test(window, tmp_path):
+    card = _reset_window(window, tmp_path)
+    card._test_worker_running = True
+    window.plc.write_bit(0, 0, True)
+    window._poll_plc_reset()
+    assert window._plc_reset_pending is True
+    assert card.controller.recovery_required is True   # 未立即动状态
+    window._apply_plc_reset()                          # worker 结束后落地
+    assert card.controller.recovery_required is False
+    assert window._plc_reset_pending is False
+
+
 def test_journal_dir_uses_env_override(window, tmp_path):
     assert window.journal_dir == tmp_path / "journal"
 
