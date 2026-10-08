@@ -16,9 +16,9 @@ database_host = "127.0.0.1"
 database_port = 3306
 credential_path = "C:\\ProgramData\\LaserLeakTest\\db.json"
 data_dir = "D:\\data"
-# 激光打码：本机打码软件监听的 TXT 文件
-laser_dir = "D:\\激光打码"
-laser_filename = "激光码信息.txt"
+# 激光打码：本机打码软件监听的 TXT 文件（101 流程统一输出 D:\激光打码.txt）
+laser_dir = "D:\\"
+laser_filename = "激光打码.txt"
 laser_encoding = "gbk"
 laser_newline = "\r\n"
 # PLC 激光启动位脉冲参数

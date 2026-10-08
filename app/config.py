@@ -50,8 +50,8 @@ class Settings:
     database_port: int = 3306
     credential_path: Path = Path(r"C:\ProgramData\LaserLeakTest\db.json")
     data_dir: Path = Path(r"D:\data")
-    laser_dir: Path = Path(r"D:\激光打码")
-    laser_filename: str = "激光码信息.txt"
+    laser_dir: Path = Path("D:\\")
+    laser_filename: str = "激光打码.txt"
     laser_encoding: str = "gbk"
     laser_newline: str = "\r\n"
     laser_hold_seconds: float = 1.0
@@ -210,8 +210,8 @@ class Settings:
                    database_port=database_port,
                    credential_path=Path(str(values.get("credential_path", r"C:\ProgramData\LaserLeakTest\db.json"))),
                    data_dir=Path(str(values.get("data_dir", r"D:\data"))),
-                   laser_dir=Path(str(values.get("laser_dir", r"D:\激光打码"))),
-                   laser_filename=str(values.get("laser_filename", "激光码信息.txt")),
+                   laser_dir=Path(str(values.get("laser_dir", "D:\\"))),
+                   laser_filename=str(values.get("laser_filename", "激光打码.txt")),
                    laser_encoding=encoding, laser_newline=newline,
                    laser_hold_seconds=hold, laser_settle_seconds=settle,
                    laser_clear_after_seconds=clear_after,

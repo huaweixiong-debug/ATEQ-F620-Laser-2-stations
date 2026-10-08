@@ -47,10 +47,10 @@ ADMIN = "simulate-admin\n"
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="准备 D:\\data 配置与 D:\\激光打码 目录")
+    parser = argparse.ArgumentParser(description="准备 D:\\data 配置与 D:\\激光打码.txt 监听文件")
     parser.add_argument("--data-dir", default=r"D:\data")
-    parser.add_argument("--laser-dir", default=r"D:\激光打码")
-    parser.add_argument("--laser-file", default="激光码信息.txt")
+    parser.add_argument("--laser-dir", default="D:\\")
+    parser.add_argument("--laser-file", default="激光打码.txt")
     parser.add_argument("--force", action="store_true", help="覆盖已存在的样例文件")
     args = parser.parse_args()
 
