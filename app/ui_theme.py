@@ -110,6 +110,7 @@ class UiTextCatalog:
         "scan_error": {"中文": "扫码错误：{error}", "English": "Scanner error: {error}", "Français": "Erreur scanner : {error}"},
         "first_error": {"中文": "一测错误：{error}", "English": "Test 1 error: {error}", "Français": "Erreur test 1 : {error}"},
         "second_error": {"中文": "二测错误：{error}", "English": "Test 2 error: {error}", "Français": "Erreur test 2 : {error}"},
+        "mark_error": {"中文": "打码错误：{error}", "English": "Marking error: {error}", "Français": "Erreur marquage : {error}"},
         "label_error": {"中文": "贴标错误：{error}", "English": "Label error: {error}", "Français": "Erreur étiquette : {error}"},
         "calibration_error": {"中文": "校准验证拒绝：{error}", "English": "Calibration validation denied: {error}", "Français": "Validation de calibration refusée : {error}"},
         "single_mode_unsupported": {
