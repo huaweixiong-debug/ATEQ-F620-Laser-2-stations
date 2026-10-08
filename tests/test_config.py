@@ -88,14 +88,19 @@ def test_invalid_newline_rejected(tmp_path):
 
 
 def test_repo_config_keys_accepted(tmp_path):
-    """真实部署配置（live.toml 的键全集）必须能解析。"""
+    """真实部署配置（live.toml 的键全集）必须能解析。
+
+    注意：现场机器上 live.toml 会被替换为对应工位模板（点位确认后
+    points_confirmed=true），因此本测试只校验键全集可解析，不校验
+    points_confirmed 的取值（预检门禁由 test_live_preflight 覆盖）。
+    """
     body = Path("config/live.toml").read_text(encoding="utf-8")
     body = body.split("#", 1)[0] if False else body
     path = tmp_path / "live.toml"
     path.write_text(body, encoding="utf-8")
     settings = Settings.from_toml(path)
     assert settings.mode.value == "live"
-    assert settings.points_confirmed is False  # 点位表尚未确认，LIVE 预检会拦截
+    assert isinstance(settings.points_confirmed, bool)
 
 
 # ---------------------------------------------------------------------------
