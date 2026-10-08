@@ -43,7 +43,7 @@ ATEQ程序号=1
 
 PERSONNEL = "张三\n"
 
-ADMIN = "simulate-admin\n"
+ADMIN = "0000\n"
 
 
 def main() -> int:
