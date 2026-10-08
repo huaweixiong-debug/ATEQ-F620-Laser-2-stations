@@ -102,7 +102,8 @@ class SerialAteq:
         self._lock = RLock()
         self._last_fifo: int | None = None
         self.stepcode_callback = None
-        self.abort_check = None
+        # 正压保压判定钩子：StepCode 变为 5 时调用一次；抛异常即中止本次监视。
+        self.step5_check = None
         self._last_reported_stepcode: int | None = None
 
     def connect(self) -> None:
@@ -395,11 +396,9 @@ class SerialAteq:
         step6_registers = None
         step_timeline: list[str] = []
         t0 = time.monotonic()
+        step5_checked = False
         while time.monotonic() < deadline:
             registers, raw = self.read_registers(self.REALTIME_ADDRESS, self.REALTIME_COUNT)
-            if self.abort_check is not None:
-                # 正压保压守护等外部中止钩子：抛异常即中止本次监视（fail-closed）。
-                self.abort_check()
             last_frame = raw
             step_code = self._swap16(registers[4])
             if step_code != self._last_reported_stepcode:
@@ -411,6 +410,11 @@ class SerialAteq:
                     except Exception:
                         # A display observer must never interrupt the test read.
                         pass
+            if step_code == 5 and not step5_checked:
+                # 正压保压点：整个测试只判定一次；钩子抛异常 → 中止监视。
+                step5_checked = True
+                if self.step5_check is not None:
+                    self.step5_check()
             # 诊断时间线：记录 StepCode/状态/FIFO 的变化过程，超时时随异常
             # 抛出，用于远程判断仪器在等待期间的真实行为。
             entry = f"{time.monotonic() - t0:.1f}s step={step_code} status=0x{self._swap16(registers[3]):04X} fifo={self._swap16(registers[1])}"

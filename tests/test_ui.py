@@ -421,7 +421,6 @@ def _guard_window(window, tmp_path):
     window.live_mode = True
     window.live_trace_path = tmp_path / "live_trace.log"   # 不污染真实日志
     card._pressure_trip_seconds = 0.0
-    card._last_hold_check = 0.0
     return card
 
 
@@ -453,17 +452,6 @@ def test_positive_hold_guard_only_during_second_test(window, tmp_path):
     card.plc = spy
     card.controller.phase = Phase.TEST_1
     spy.bits[(110, 6)] = False
-    card._positive_hold_guard()
-    assert spy.writes == []
-
-
-def test_positive_hold_guard_throttles_two_seconds(window, tmp_path):
-    card = _guard_window(window, tmp_path)
-    spy = _PlcSpy()
-    card.plc = spy
-    card.controller.phase = Phase.TEST_2
-    spy.bits[(110, 6)] = False
-    card._last_hold_check = time.monotonic()      # 刚查过 → 本次跳过
     card._positive_hold_guard()
     assert spy.writes == []
 

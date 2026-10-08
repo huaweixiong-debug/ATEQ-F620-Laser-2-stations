@@ -164,10 +164,9 @@ class StationPanel(QFrame):
         self.stepcode_updated.connect(self._apply_stepcode_display)
         if hasattr(self.controller.ateq, "stepcode_callback"):
             self.controller.ateq.stepcode_callback = self.stepcode_updated.emit
-        if hasattr(self.controller.ateq, "abort_check"):
-            self.controller.ateq.abort_check = self._positive_hold_guard
+        if hasattr(self.controller.ateq, "step5_check"):
+            self.controller.ateq.step5_check = self._positive_hold_guard
         self._pressure_trip_seconds = 2.0
-        self._last_hold_check = 0.0
         self.setObjectName(f"stationCard_{station.value}")
         self.setFrameShape(QFrame.Shape.Box)
         outer = QVBoxLayout(self); outer.setContentsMargins(14, 0, 14, 4); outer.setSpacing(0)
@@ -514,12 +513,12 @@ class StationPanel(QFrame):
         return self.calibration_provider(self.station) if self.calibration_provider else None
 
     def _positive_hold_guard(self) -> None:
-        """正压保压守护：二次测试期间每 2 秒读压力开关，0=异常 → 终止并脉冲。
+        """正压保压判定：StepCode=5 时判定一次，0=异常 → 终止测试并脉冲。
 
         现场约定：A 工位保压正常信号 = M886、异常终止输出 = M885；B 工位
         正常信号 = M887、异常终止输出 = M884。异常时把终止输出置 1 保持
         2 秒再复位，然后抛出异常中止本次监视（走既有故障/恢复路径）。
-        仅 LIVE 生效；读失败不误报。
+        仅 LIVE + 二次测试（正压）生效；读失败不误报。
         """
         if not getattr(self.window(), "live_mode", False):
             return
@@ -527,10 +526,6 @@ class StationPanel(QFrame):
             return
         if not (self.point_map.has("pressure_alarm") and self.point_map.has("pressure_trip")):
             return
-        now = time.monotonic()
-        if now - self._last_hold_check < 2.0:
-            return
-        self._last_hold_check = now
         trace = getattr(self.window(), "_live_trace", None)
         byte, bit = self.point_map.address("pressure_alarm")
         try:
