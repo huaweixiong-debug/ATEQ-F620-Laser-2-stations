@@ -414,7 +414,6 @@ def _guard_window(window, tmp_path):
     points = dc.replace(card.point_map, addresses={
         **card.point_map.addresses,
         "pressure_alarm": (110, 6),
-        "pressure_alarm_peer": (110, 7),
         "pressure_trip": (110, 5),
     })
     card.point_map = points
@@ -430,8 +429,7 @@ def test_positive_hold_guard_trips_and_terminates(window, tmp_path):
     spy = _PlcSpy()
     card.plc = spy
     card.controller.phase = Phase.TEST_2
-    spy.bits[(110, 6)] = False            # 本工位开关=0 → 异常
-    spy.bits[(110, 7)] = True             # 对方工位正常
+    spy.bits[(110, 6)] = False            # 压力开关=0 → 异常
     with pytest.raises(RuntimeError, match="压力开关异常"):
         card._positive_hold_guard()
     assert spy.writes == [(110, 5, True), (110, 5, False)]   # M885 脉冲 2 秒
@@ -440,25 +438,12 @@ def test_positive_hold_guard_trips_and_terminates(window, tmp_path):
     assert "PRESSURE_SWITCH_ABNORMAL" in trace_text
 
 
-def test_positive_hold_guard_trips_when_peer_switch_abnormal(window, tmp_path):
-    card = _guard_window(window, tmp_path)
-    spy = _PlcSpy()
-    card.plc = spy
-    card.controller.phase = Phase.TEST_2
-    spy.bits[(110, 6)] = True             # 本工位正常
-    spy.bits[(110, 7)] = False            # 对方工位开关=0 → 同样终止
-    with pytest.raises(RuntimeError, match="压力开关异常"):
-        card._positive_hold_guard()
-    assert spy.writes == [(110, 5, True), (110, 5, False)]
-
-
 def test_positive_hold_guard_normal_keeps_running(window, tmp_path):
     card = _guard_window(window, tmp_path)
     spy = _PlcSpy()
     card.plc = spy
     card.controller.phase = Phase.TEST_2
-    spy.bits[(110, 6)] = True             # 两端开关均为 1 → 正常
-    spy.bits[(110, 7)] = True
+    spy.bits[(110, 6)] = True             # 压力开关=1 → 正常
     card._positive_hold_guard()           # 不抛异常
     assert spy.writes == []
     trace_text = (tmp_path / "live_trace.log").read_text(encoding="utf-8")

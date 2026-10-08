@@ -36,7 +36,6 @@ REQUIRED_SIGNALS = (
 OPTIONAL_SIGNALS = (
     "laser_done",     # 激光打码完成位（可选反馈）
     "pressure_alarm", # 压力开关正常信号（PLC->PC，1=正常/0=异常）
-    "pressure_alarm_peer", # 对方工位压力开关（正压保压双端判定）
     "pressure_trip",  # 压力开关异常终止输出（PC->PLC，置 1 保持 2 秒）
 )
 
@@ -58,7 +57,6 @@ OPTIONAL_SIGNALS_FX = (
     "isolation_init", # 隔离箱初始化（老 M466 → M58.2）
     "shield_cylinder",# 本工位屏蔽气缸（A=M111.3 即 M891 / B=M111.2 即 M890）
     "pressure_alarm", # 压力开关正常信号（PLC->PC：A=M110.6 即 M886 / B=M110.7 即 M887）
-    "pressure_alarm_peer", # 对方工位压力开关（A=M110.7 / B=M110.6，保压时两端都要判）
     "pressure_trip",  # 异常终止输出（PC->PLC：A=M110.5 即 M885 / B=M110.4 即 M884）
 )
 
@@ -84,7 +82,6 @@ SIM_POINTS = {
     "laser_start": "M20.0",
     "laser_done": "M20.1",
     "pressure_alarm": "M20.2",
-    "pressure_alarm_peer": "M20.4",
     "pressure_trip": "M20.3",
 }
 
