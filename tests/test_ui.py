@@ -64,6 +64,29 @@ def test_single_station_and_no_scan_widgets(window):
     assert card.table.horizontalHeader().stretchLastSection() is False
 
 
+def test_staff_change_does_not_trigger_ateq_sync(window, monkeypatch):
+    card = window.cards[0]
+    calls = []
+    monkeypatch.setattr(card, "_product_changed", lambda *a: calls.append(a))
+    card.staff.addItem("李四")
+    card.staff.setCurrentText("李四")
+    assert calls == []
+    assert card.ateq_no.text() != "ERR"
+
+
+def test_model_change_mid_cycle_defers_instead_of_err(window):
+    from app.ateq import SerialAteq
+
+    card = window.cards[0]
+    card.part_no.setCurrentText(PART)
+    card.controller.ateq = SerialAteq("COMX", "A", serial_factory=lambda **kw: None)
+    card.controller.phase = Phase.READY
+    card._product_changed()
+    assert card.model_config is not None
+    assert card.ateq_no.text() == "1"      # 型号配置的程序号，不显示 ERR
+    assert card._error_key is None
+
+
 def test_mode_button_defaults_to_dual_and_caption_follows_state(window):
     card = window.cards[0]
     assert card.mode_button.isChecked() is True          # 默认双测

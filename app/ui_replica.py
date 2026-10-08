@@ -195,7 +195,7 @@ class StationPanel(QFrame):
         self.ok_today = QSpinBox(); self.ok_today.setObjectName(f"ok_today_{station.value}"); self.ok_today.setReadOnly(True); self.ok_today.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons); self.ok_today.setFixedWidth(72); top.addWidget(QLabel(f"OK Today {station.value}"), 0, 2); top.addWidget(self.ok_today, 1, 2)
         self.ateq_no = QLineEdit("SIM"); self.ateq_no.setObjectName(f"ateq_no_{station.value}"); self.ateq_no.setReadOnly(True); self.ateq_no.setMaxLength(3); self.ateq_no.setFixedWidth(64); top.addWidget(QLabel(f"ATEQ No. {station.value}"), 0, 3); top.addWidget(self.ateq_no, 1, 3)
         self.part_no = QComboBox(); self.part_no.setObjectName(f"part_no_{station.value}"); self.part_no.currentTextChanged.connect(self._product_changed); top.addWidget(QLabel(f"Part No. {station.value}"), 0, 4); top.addWidget(self.part_no, 1, 4)
-        self.staff = QComboBox(); self.staff.setObjectName(f"staff_{station.value}"); self.staff.currentTextChanged.connect(self._product_changed); top.addWidget(QLabel(f"Staff {station.value}"), 0, 5); top.addWidget(self.staff, 1, 5)
+        self.staff = QComboBox(); self.staff.setObjectName(f"staff_{station.value}"); self.staff.currentTextChanged.connect(self._staff_changed); top.addWidget(QLabel(f"Staff {station.value}"), 0, 5); top.addWidget(self.staff, 1, 5)
         for column in range(6):
             top.setColumnMinimumWidth(column, 0); top.setColumnStretch(column, 1)
         # Compact numeric fields leave the reclaimed width to the Part No. field.
@@ -350,6 +350,10 @@ class StationPanel(QFrame):
         self._apply_mode_caption(getattr(self.window(), "_language", "中文"))
         self._product_changed()
 
+    def _staff_changed(self, *_args):
+        """人员切换只影响下一个周期的冻结数据，与 ATEQ 程序无关。"""
+        return
+
     def _product_changed(self, *_args):
         if not hasattr(self, "part_no") or not self.model_provider or not self.part_no.currentText().strip():
             return
@@ -358,7 +362,14 @@ class StationPanel(QFrame):
             self.ateq_no.setText(str(self.model_config.ateq_program))
             if isinstance(self.controller.ateq, SerialAteq):
                 if self.controller.phase is not Phase.IDLE:
-                    raise RuntimeError("当前周期进行中，不能切换 ATEQ 程序")
+                    # 周期进行中不写 ATEQ 程序（周期启动时会按冻结型号选择），
+                    # 也不显示 ERR：界面上的型号变更不应打断运行中的周期。
+                    trace = getattr(self.window(), "_live_trace", None)
+                    if trace is not None:
+                        trace(f"ATEQ_PROGRAM_SYNC_DEFERRED station={self.station.value} "
+                              f"phase={self.controller.phase.value}")
+                    self._error_key = None
+                    return
                 self.controller.ateq.select_program(str(self.model_config.ateq_program))
                 actual_program = self.controller.ateq.current_program()
                 if actual_program != int(self.model_config.ateq_program):
