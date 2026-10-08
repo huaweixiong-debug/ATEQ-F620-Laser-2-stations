@@ -407,7 +407,7 @@ class _PlcSpy:
         self.bits[(byte, bit)] = bool(value)
 
 
-def _guard_window(window):
+def _guard_window(window, tmp_path):
     import dataclasses as dc
 
     card = window.cards[0]
@@ -419,13 +419,14 @@ def _guard_window(window):
     card.point_map = points
     window.point_map = points
     window.live_mode = True
+    window.live_trace_path = tmp_path / "live_trace.log"   # 不污染真实日志
     card._pressure_trip_seconds = 0.0
     card._last_hold_check = 0.0
     return card
 
 
-def test_positive_hold_guard_trips_and_terminates(window):
-    card = _guard_window(window)
+def test_positive_hold_guard_trips_and_terminates(window, tmp_path):
+    card = _guard_window(window, tmp_path)
     spy = _PlcSpy()
     card.plc = spy
     card.controller.phase = Phase.TEST_2
@@ -436,8 +437,8 @@ def test_positive_hold_guard_trips_and_terminates(window):
     assert spy.read_bit(110, 5) is False
 
 
-def test_positive_hold_guard_normal_keeps_running(window):
-    card = _guard_window(window)
+def test_positive_hold_guard_normal_keeps_running(window, tmp_path):
+    card = _guard_window(window, tmp_path)
     spy = _PlcSpy()
     card.plc = spy
     card.controller.phase = Phase.TEST_2
@@ -446,8 +447,8 @@ def test_positive_hold_guard_normal_keeps_running(window):
     assert spy.writes == []
 
 
-def test_positive_hold_guard_only_during_second_test(window):
-    card = _guard_window(window)
+def test_positive_hold_guard_only_during_second_test(window, tmp_path):
+    card = _guard_window(window, tmp_path)
     spy = _PlcSpy()
     card.plc = spy
     card.controller.phase = Phase.TEST_1
@@ -456,8 +457,8 @@ def test_positive_hold_guard_only_during_second_test(window):
     assert spy.writes == []
 
 
-def test_positive_hold_guard_throttles_two_seconds(window):
-    card = _guard_window(window)
+def test_positive_hold_guard_throttles_two_seconds(window, tmp_path):
+    card = _guard_window(window, tmp_path)
     spy = _PlcSpy()
     card.plc = spy
     card.controller.phase = Phase.TEST_2
