@@ -17,7 +17,7 @@ plc_parity = "E"
 plc_databits = 7
 plc_stopbits = 1
 points_path = "config/points_240429_B.toml"
-points_confirmed = false   # laser_start 地址经电气确认后改 true
+points_confirmed = true    # 2026-10-08 现场确认（laser_start=B 工位 M889）
 
 # ---- B 侧 PLC 中转服务（供 A 电脑经网络读写 PLC）----
 relay_enabled = true
@@ -25,7 +25,7 @@ relay_port = 9101
 relay_token = "xiezhong-240429"   # 与 A 电脑 plc_relay_token 一致
 
 # ---- 称重（COM6 Modbus 40002 -> PLC D900 实时重量）----
-weight_enabled = true
+weight_enabled = false     # 2026-10-08 COM6 称重未接线；接线后改回 true
 weight_com = "COM6"
 weight_slave = 1
 weight_register = "40002"

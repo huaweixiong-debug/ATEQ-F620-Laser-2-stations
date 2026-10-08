@@ -14,7 +14,7 @@ plc_relay_host = "192.168.7.20"   # B 电脑实际 IP（2026-10-08 现场确认�
 plc_relay_port = 9101
 plc_relay_token = "xiezhong-240429"
 points_path = "config/points_240429.toml"
-points_confirmed = false   # laser_start 地址经电气确认后改 true
+points_confirmed = true    # 2026-10-08 现场确认（laser_start=A 工位 M888）
 
 # ---- 称重：由 B 电脑负责（COM6 接在 B 上），A 不启用 ----
 weight_enabled = false
