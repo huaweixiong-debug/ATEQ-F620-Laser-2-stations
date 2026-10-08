@@ -123,3 +123,59 @@ def test_remote_safe_stop_and_errors():
         client.close()
     finally:
         server.stop()
+
+
+def test_relay_write_independent_of_server_gate():
+    """A/B 独立：B 侧 safe_stop 关闭本机写门禁后，A 经 relay 的写仍可用。
+
+    2026-10-08 现场：B 保压异常安全停止 → B 本机门禁关闭 → A 打码脉冲被
+    relay 拒绝 → A mark_error。relay 转发写必须走 force 路径，写权只由
+    A 侧 capability 门禁把守。
+    """
+    plc = FakeFxPlc()
+    plc.enable_writes(True)
+    plc.safe_stop("B 保压异常安全停止")
+    with pytest.raises(PermissionError):
+        plc.write_bit(0, 0, True)            # B 本机写确实被门禁拒绝
+    port = _free_port()
+    server = PlcRelayServer(plc, port=port, token="t")
+    server.start()
+    try:
+        client = RemoteFxPlc("127.0.0.1", port, token="t")
+        client.connect()
+        client.enable_writes(True)
+        client.write_bit(1, 0, True)         # A 的正常写（如打码脉冲）不受影响
+        assert plc.read_bit(1, 0) is True
+        client.disconnect()
+        again = RemoteFxPlc("127.0.0.1", port, token="t")
+        again.connect()                      # 未 enable_writes
+        again.force_write_bit(1, 1, True)    # A 侧故障终止脉冲必须仍能发出
+        assert plc.read_bit(1, 1) is True
+        again.disconnect()
+    finally:
+        server.stop()
+
+
+def test_remote_client_rebuilds_stale_socket():
+    """relay 链路抖动/B 侧重启后，connect() 必须重建 socket 而非翻标志复用。
+
+    旧实现：旧 socket 未关闭时 connect() 只把 connected 置 True，读写在
+    死连接上永远失败（2026-10-08 A 机 21:12 前长时间瘫痪根因）。
+    """
+    plc = FakeFxPlc()
+    port = _free_port()
+    server = PlcRelayServer(plc, port=port, token="t")
+    server.start()
+    try:
+        client = RemoteFxPlc("127.0.0.1", port, token="t")
+        client.connect()
+        assert client.read_bit(0, 0) is False
+        # 模拟对端关闭（服务端 5 秒空闲超时 / B 侧重启）：底层 socket 死掉
+        client._sock.close()
+        with pytest.raises(RuntimeError):
+            client.read_bit(0, 0)            # 失败后 connected=False
+        client.connect()                     # 修复点：重建连接
+        assert client.read_bit(0, 0) is False
+        client.disconnect()
+    finally:
+        server.stop()

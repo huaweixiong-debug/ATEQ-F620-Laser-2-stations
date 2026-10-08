@@ -18,7 +18,11 @@
 安全与互斥：
 - token 不匹配立即断开（防误连别的工位）；
 - 同一时刻只允许一个客户端：FX 编程口是独占串口，B 本机实例与 A 中转
-  共用同一把锁，所有写都受 B 侧 enable_writes 门禁约束。
+  共用同一把 IO 锁。
+- A/B 工位相互独立：B 侧本地故障（safe_stop）只关闭 B 本机写门禁，
+  **不再断开串口**；relay 转发的写走 force 路径，不受 B 本机门禁限制
+  （写权由 A 侧 capability 门禁 + token + 单客户端把守）。B 的故障不得
+  连锁拒绝 A 的打码/复位等合法操作。
 """
 from __future__ import annotations
 from threading import Lock, Thread
@@ -135,14 +139,16 @@ class PlcRelayServer:
             if op == "read_bit":
                 return {"ok": True, "value": bool(
                     self.plc.read_bit(int(request["byte"]), int(request["bit"])))}
-            if op == "write_bit":
-                self.plc.write_bit(int(request["byte"]), int(request["bit"]),
-                                   bool(request["value"]))
+            if op in ("write_bit", "force_write_bit"):
+                # A/B 独立：转发写走 force 路径，不受 B 本机写门禁限制
+                # （A 侧 capability 门禁在客户端已把过关）。
+                self.plc.force_write_bit(int(request["byte"]), int(request["bit"]),
+                                         bool(request["value"]))
                 return {"ok": True}
             if op == "read_word":
                 return {"ok": True, "value": int(self.plc.read_word(int(request["device"])))}
-            if op == "write_word":
-                self.plc.write_word(int(request["device"]), int(request["value"]))
+            if op in ("write_word", "force_write_word"):
+                self.plc.force_write_word(int(request["device"]), int(request["value"]))
                 return {"ok": True}
             if op == "health":
                 return {"ok": True, "value": bool(self.plc.health())}
@@ -185,9 +191,17 @@ class RemoteFxPlc:
 
     def connect(self) -> None:
         with self._lock:
-            if self._sock is not None:
-                self.connected = True
-                return
+            if self._sock is not None and self.connected:
+                return  # 已在正常连接上
+            # 旧 socket 可能已被对端关闭（服务端 5 秒空闲超时/B 侧重启）。
+            # 此时绝不能只把 connected 翻回 True 复用死连接——那会让本
+            # 工位永远无法恢复，必须关闭旧 socket 重建。
+            stale, self._sock, self.connected = self._sock, None, False
+            if stale is not None:
+                try:
+                    stale.close()
+                except OSError:
+                    pass
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(self.timeout_s)
             try:
@@ -247,6 +261,18 @@ class RemoteFxPlc:
                             "bit": int(bit), "value": bool(value)})
         if not reply.get("ok"):
             raise RuntimeError(str(reply.get("error", "write_bit 失败")))
+
+    def force_write_bit(self, byte: int, bit: int, value: bool) -> None:
+        """故障终止脉冲专用：绕过本机 capability 门禁（safe_stop 已关门禁
+        并断开连接，但终止输出是安全方向的写，必须仍能发出）；必要时先
+        自动重连中转。
+        """
+        if not self.connected or self._sock is None:
+            self.connect()
+        reply = self._call({"op": "force_write_bit", "byte": int(byte),
+                            "bit": int(bit), "value": bool(value)})
+        if not reply.get("ok"):
+            raise RuntimeError(str(reply.get("error", "force_write_bit 失败")))
 
     def read_word(self, device: int) -> int:
         reply = self._call({"op": "read_word", "device": int(device)})

@@ -181,3 +181,26 @@ def test_fake_fx_plc_standalone():
     fake.write_word(900, 500)
     assert fake.read_word(900) == 500
     assert fake.outputs_energized() is True
+
+
+def test_safe_stop_keeps_serial_link(fx_env):
+    """A/B 工位独立：本工位故障安全停止只关写门禁，不再断开串口。
+
+    FX 串口同时承载另一工位经 relay 的读写；断开串口会连锁拒绝对方
+    的打码/复位操作（2026-10-08 现场 A mark_error 根因）。
+    """
+    plc, bits, _, _ = fx_env
+    plc.enable_writes(True)
+    plc.safe_stop("保压异常安全停止")
+    assert plc._writes_enabled is False
+    assert plc.connected is True          # 串口保持，relay 继续服务对端工位
+    with pytest.raises(PermissionError):
+        plc.write_bit(0, 0, True)         # 本机普通写仍被门禁拒绝
+    plc.force_write_bit(110, 5, True)     # 故障终止脉冲（安全方向写）必须可发
+    assert bits[110 * 8 + 5] is True
+
+
+def test_force_write_word_bypasses_gate(fx_env):
+    plc, _, words, _ = fx_env
+    plc.force_write_word(900, 1234)
+    assert words[900] == 1234

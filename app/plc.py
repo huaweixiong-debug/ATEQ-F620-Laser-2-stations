@@ -29,6 +29,9 @@ class FakePlc:
         with self._lock:
             self._bits[(byte, bit)] = value
 
+    def force_write_bit(self, byte: int, bit: int, value: bool) -> None:
+        self.write_bit(byte, bit, value)
+
     def health(self) -> bool:
         return self.connected
 
@@ -146,6 +149,24 @@ class Snap7Plc:
         except Exception:
             return False
 
+    def force_write_bit(self, byte: int, bit: int, value: bool) -> None:
+        """绕过本机写门禁的位写（故障终止脉冲等安全方向输出）。"""
+        if not 0 <= bit <= 7:
+            raise ValueError(f"无效位号: {bit}")
+        with self._io_lock:
+            self._require_connection()
+            current = self.read_byte(byte)
+            mask = 1 << bit
+            updated = (current | mask) if value else (current & ~mask)
+            if updated == current:
+                return
+            try:
+                self._client.write_area(self._area.MK, 0, byte, bytearray([updated]))
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                self.connected = False
+                raise RuntimeError(f"PLC {self.ip} 写入失败: {self.last_error}") from exc
+
     def safe_stop(self, reason: str) -> None:
         self._writes_enabled = False
         self.disconnect()
@@ -251,8 +272,40 @@ class FxSerialPlc:
         return bool(self._client.health())
 
     def safe_stop(self, reason: str) -> None:
+        # 只关本机写门禁，不再断开串口：FX 串口同时承载另一工位经
+        # relay 的读写（A/B 工位必须独立，本工位故障不得连锁断掉对方
+        # 的 PLC 通道）。机器侧安全由写门禁 + 终止脉冲输出保证。
         self._writes_enabled = False
-        self.disconnect()
+        self.last_error = f"safe_stop: {reason}"
+
+    def force_write_bit(self, byte: int, bit: int, value: bool) -> None:
+        """绕过本机写门禁的位写（仅限安全方向输出：故障终止脉冲、
+        relay 转发的对端工位写——对端写权由对端 capability 门禁把守）。
+        """
+        if not 0 <= bit <= 7:
+            raise ValueError(f"无效位号: {bit}")
+        with self._io_lock:
+            self._require_connection()
+            device = byte * 8 + bit
+            try:
+                self._client.write_bits(device, [bool(value)])
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                self.connected = False
+                raise RuntimeError(f"FX PLC {self.port} 写入失败: {self.last_error}") from exc
+
+    def force_write_word(self, device: int, value: int) -> None:
+        """绕过本机写门禁的字写（语义同 force_write_bit）。"""
+        if not 0 <= int(value) <= 0xFFFF:
+            raise ValueError(f"字数值超 16 位范围: {value}")
+        with self._io_lock:
+            self._require_connection()
+            try:
+                self._client.write_words(device, [int(value)])
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                self.connected = False
+                raise RuntimeError(f"FX PLC {self.port} 写入失败: {self.last_error}") from exc
 
     def outputs_energized(self) -> bool:
         try:
@@ -300,11 +353,19 @@ class FakeFxPlc:
             raise PermissionError("PLC 写入被 capability policy 拒绝")
         self._words[int(device)] = int(value) & 0xFFFF
 
+    def force_write_bit(self, byte: int, bit: int, value: bool) -> None:
+        """绕过本机写门禁（故障终止脉冲/relay 对端写）。"""
+        self._bits[(int(byte), int(bit))] = bool(value)
+
+    def force_write_word(self, device: int, value: int) -> None:
+        self._words[int(device)] = int(value) & 0xFFFF
+
     def health(self) -> bool:
         return self.connected
 
     def safe_stop(self, reason: str) -> None:
         self._bits.clear()
+        self._writes_enabled = False   # 与 FxSerialPlc 对齐：安全停止关闭写门禁
         self.last_safe_stop = reason
 
     def outputs_energized(self) -> bool:

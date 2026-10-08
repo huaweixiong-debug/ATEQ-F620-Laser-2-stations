@@ -159,6 +159,7 @@ class StationPanel(QFrame):
         self.model_config = None
         self._error_key = None
         self._pressure_alarm_active = False
+        self._fault_trip_sent = False  # 每次故障只发一轮 M885/M884 终止脉冲
         self.controller = StationController(station, repository, marker, ateq or FakeAteq(), journal,
             safe_stop=plc, license_status=security.license_status, security=security)
         self.stepcode_updated.connect(self._apply_stepcode_display)
@@ -607,6 +608,43 @@ class StationPanel(QFrame):
             f"正压保压阶段压力开关异常（M{byte}.{bit}=0，{self._pressure_window_seconds:g} "
             f"秒窗口内 ON 不足 {self._pressure_on_seconds:g} 秒），终止测试")
 
+    def _fault_trip_watch(self, controller) -> None:
+        """工位进入 FAULT（上位机任何错误）→ 脉冲本工位终止输出 2 秒。
+
+        现场约定（2026-10-08）：A 工位任何错误 → M885、B 工位任何错误 →
+        M884，置 1 保持 2 秒后复位（与保压异常终止共用同一输出点）。
+        走 force 路径：故障时 safe_stop 已关闭本机写门禁（A 侧还会断开
+        中转），而终止输出是安全方向的写，必须仍能发出。每次故障只发
+        一轮，离开 FAULT 后重新武装；发送失败只记日志（PLC 不可达时
+        机器侧本就无动作可终止）。
+        """
+        if controller.phase is not Phase.FAULT:
+            self._fault_trip_sent = False
+            return
+        if self._fault_trip_sent:
+            return
+        self._fault_trip_sent = True
+        if not self.point_map.has("pressure_trip"):
+            return
+        byte, bit = self.point_map.address("pressure_trip")
+        trace = getattr(self.window(), "_live_trace", None)
+        if trace is not None:
+            trace(f"FAULT_TRIP_PULSE station={self.station.value} M{byte}.{bit} "
+                  f"置 1 保持 {self._pressure_trip_seconds:g} 秒（工位故障）")
+
+        def pulse():
+            try:
+                self.plc.force_write_bit(byte, bit, True)
+                time.sleep(self._pressure_trip_seconds)
+                self.plc.force_write_bit(byte, bit, False)
+            except Exception as exc:
+                if trace is not None:
+                    trace(f"FAULT_TRIP_FAILED station={self.station.value} "
+                          f"{type(exc).__name__}: {exc}")
+
+        threading.Thread(target=pulse, daemon=True,
+                         name=f"fault-trip-{self.station.value}").start()
+
     def set_pressure_alarm(self, active: bool) -> None:
         """PLC->PC 压力开关报警显示（只读轮询，不参与联锁）。"""
         active = bool(active)
@@ -935,7 +973,7 @@ class StationPanel(QFrame):
             self.set_pressure_alarm(False)
 
     def refresh(self):
-        c = self.controller; rows = self._records(); self.total_today.setValue(len(rows)); self.ok_today.setValue(sum(1 for r in rows if r.second and r.second.result is Result.OK))
+        c = self.controller; rows = self._records(); self.total_today.setValue(len(rows)); self.ok_today.setValue(sum(1 for r in rows if r.second and r.second.result is Result.OK)); self._fault_trip_watch(c)
         sequences = self._daily_sequence_map(rows)
         for row in range(30):
             values = ["", "", "", "", "", "", "", "", "", "", ""]
