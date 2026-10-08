@@ -17,3 +17,4 @@ live_trace.log
 
 # 会话产物
 .zcode/
+.mimosa/
