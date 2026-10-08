@@ -651,6 +651,60 @@ def test_plc_reset_defers_during_active_test(window, tmp_path):
     assert window._plc_reset_pending is False
 
 
+class _ResettablePlc:
+    """断开的 PLC：connect() 前读取抛错，连接后按位读取。"""
+
+    def __init__(self):
+        self.connected = False
+        self.bits = {}
+        self.connect_calls = 0
+        self.writes_approved = None
+
+    def connect(self):
+        self.connect_calls += 1
+        self.connected = True
+
+    def enable_writes(self, approved):
+        self.writes_approved = bool(approved)
+
+    def read_bit(self, byte, bit):
+        if not self.connected:
+            raise RuntimeError("FX PLC 未连接，先调用 connect()")
+        return bool(self.bits.get((byte, bit), False))
+
+    def write_bit(self, byte, bit, value):
+        self.bits[(byte, bit)] = bool(value)
+
+
+def test_plc_reset_survives_disconnected_plc(window, tmp_path):
+    card = _reset_window(window, tmp_path)
+    plc = _ResettablePlc()                 # 故障后适配器处于断开状态
+    card.plc = plc
+    window._last_reset_bit = False
+    window._last_reset_reconnect = 0.0
+    window._reset_read_failed_last = False
+    window._poll_plc_reset()               # 读失败 → 自动重连
+    assert plc.connect_calls >= 1
+    assert plc.connected is True
+    # 断线期间错过的复位沿：恢复后读到高电平也按复位请求处理
+    plc.bits[(0, 0)] = True
+    window._poll_plc_reset()
+    assert card.controller.recovery_required is False
+    assert card.controller.phase is Phase.IDLE
+    assert card._error_key is None
+
+
+def test_plc_reset_continuous_high_does_not_repeat(window, tmp_path):
+    card = _reset_window(window, tmp_path)
+    spy = _PlcSpy()
+    card.plc = spy
+    window._last_reset_bit = True          # 已处于高电平（持续按住）
+    window._reset_read_failed_last = False
+    spy.bits[(0, 0)] = True
+    window._poll_plc_reset()
+    assert card.controller.recovery_required is True   # 不重复触发
+
+
 def test_journal_dir_uses_env_override(window, tmp_path):
     assert window.journal_dir == tmp_path / "journal"
 

@@ -1169,6 +1169,8 @@ class MainWindow(QMainWindow):
         self._b_test_in_progress = False
         self._plc_reset_pending = False
         self._last_reset_bit = None
+        self._last_reset_reconnect = 0.0
+        self._reset_read_failed_last = False
         self.cards[0].stepcode_updated.connect(lambda value: self._remember_live_stepcode(self.station, value))
         # Configuration diagnostics only; physical cycles are dispatched
         # exclusively by the ATEQ StepCode=4 hardware edge.
@@ -1300,7 +1302,12 @@ class MainWindow(QMainWindow):
         card.set_pressure_alarm(in_positive_hold and not normal)
 
     def _poll_plc_reset(self):
-        """PLC 面板复位（A=M0.0 / B=M0.3）：上升沿→清报警并复位未完成周期。"""
+        """PLC 面板复位（A=M0.0 / B=M0.3）：收到即清报警并复位未完成周期。
+
+        故障时 PLC 适配器会被安全停止断开；这里读失败时自动节流重连，
+        保证面板复位（现场主用路径）在故障状态下也能被读到；断线恢复后
+        读到高电平同样按复位请求处理（断线期间可能错过上升沿）。
+        """
         card = self.cards[0]
         if not card.point_map.has("start"):
             return
@@ -1308,11 +1315,22 @@ class MainWindow(QMainWindow):
         try:
             current = bool(card.plc.read_bit(byte, bit))
         except Exception:
-            return  # 读失败不动作，下个周期再试
+            self._reset_read_failed_last = True
+            now = time.monotonic()
+            if now - self._last_reset_reconnect >= 3.0:
+                self._last_reset_reconnect = now
+                card.reconnect_plc()
+            return
+        gap = self._reset_read_failed_last
+        self._reset_read_failed_last = False
         previous = self._last_reset_bit
         self._last_reset_bit = current
-        if previous is None or not current or previous:
-            return  # 仅 0→1 上升沿；启动时只记录初值
+        if not current:
+            return
+        if previous is None and not gap:
+            return  # 启动后的首次读取：只记录初值
+        if previous is True and not gap:
+            return  # 持续高电平且连接连续：不重复触发
         self._live_trace(f"PLC_RESET station={self.station.value} M{byte}.{bit} 0->1")
         if getattr(card, "_test_worker_running", False):
             self._plc_reset_pending = True
