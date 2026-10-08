@@ -855,8 +855,11 @@ class MainWindow(QMainWindow):
         _write_crash_log(where, exc)
 
     def __init__(self, language: str = "中文", *, live: bool = False,
-                 config_path: Path | None = None):
-        super().__init__(); self.setWindowTitle("ATEQ F620 双腔气密检测 + 激光打码"); self.resize(METRICS.canonical_width, METRICS.canonical_height); self.setMinimumSize(1100, 700)
+                 config_path: Path | None = None, preflight_passed: bool = False):
+        super().__init__()
+        if live and not preflight_passed:
+            raise RuntimeError("LIVE_BLOCKED: live UI 需要预检全部通过并显式传入启动令牌")
+        self.setWindowTitle("ATEQ F620 双腔气密检测 + 激光打码"); self.resize(METRICS.canonical_width, METRICS.canonical_height); self.setMinimumSize(1100, 700)
         app = QApplication.instance(); family = "Segoe UI"
         for font_path in (Path(r"C:\Windows\Fonts\Noto Sans SC (TrueType).otf"), Path(r"C:\Windows\Fonts\simsun.ttc")):
             if font_path.exists():
@@ -926,7 +929,7 @@ class MainWindow(QMainWindow):
         self.calibration = {s: Calibration(station=s, initial_due=True) for s in StationId}
         self._calibration_state_path = Path(
             os.environ.get("LEAKTEST_CAL_STATE", r"D:\ATEQ\calibration_state.json"))
-        self._restore_calibration(); self.security = SecurityContext(AuthSession(demo=True, password_file=self.data_dir / "管理员.txt"), LicenseVerifier(simulator=True).verify(b"SIMULATE", b"SIMULATE-SIGNATURE")); self.product_settings = ProductSettingsService(self.security); self.model_settings = ModelSettingsService(self.security, self.data_dir / "日期设置.ini"); self.personnel = PersonnelService(self.security, self.data_dir / "作业员列表.txt"); self.global_settings = GlobalSettingsService(self.security, self.data_dir / "全局设置.ini"); self.confirmation_callback = self._confirm_output; self._setup_values = {"customer_no":"", "ateq_no":"SIM"}; self.journal_dir = Path(tempfile.mkdtemp(prefix="LaserLeakTest-replica-")); self.tabs = CompatibilityTabs(); self._language = language if language in UiTextCatalog.LANGUAGES else "中文"; self._i18n_widgets = []
+        self._restore_calibration(); self.security = SecurityContext(AuthSession(demo=True, password_file=self.data_dir / "管理员.txt"), LicenseVerifier(simulator=True).verify(b"SIMULATE", b"SIMULATE-SIGNATURE")); self.product_settings = ProductSettingsService(self.security); self.model_settings = ModelSettingsService(self.security, self.data_dir / "日期设置.ini"); self.personnel = PersonnelService(self.security, self.data_dir / "作业员列表.txt"); self.global_settings = GlobalSettingsService(self.security, self.data_dir / "全局设置.ini"); self.confirmation_callback = self._confirm_output; self._setup_values = {"customer_no":"", "ateq_no":"SIM"}; self.journal_dir = self._build_journal_dir(); self.tabs = CompatibilityTabs(); self._language = language if language in UiTextCatalog.LANGUAGES else "中文"; self._i18n_widgets = []
         self.cards = [StationPanel(self.station, self.repository, self.marker,
                                    self.plc,
                                    CycleJournal(self.journal_dir / f"{self.station.value}.json"),
@@ -960,6 +963,39 @@ class MainWindow(QMainWindow):
         # Apply the selected catalog before the first frame is shown.
         self.language_selector.setCurrentText(self._language)
         self._apply_language(self._language)
+
+    def _build_journal_dir(self) -> Path:
+        """Durable per-station journal directory.
+
+        Priority: ``LEAKTEST_JOURNAL_DIR`` override → live ``D:\\ATEQ\\journal``
+        → per-run temp in simulate.  Live/env creation failures raise: a live
+        station must never silently fall back to a volatile journal.
+        """
+        override = os.environ.get("LEAKTEST_JOURNAL_DIR")
+        if override:
+            path = Path(override)
+        elif self.live_mode:
+            path = Path(r"D:\ATEQ\journal")
+        else:
+            return Path(tempfile.mkdtemp(prefix="LaserLeakTest-replica-"))
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _single_mode_marking_unsupported(self, card, *, sample: bool) -> bool:
+        """True for marking-capable single-mode cycles on the MySQL live path.
+
+        Sample sites (``sample=True``) always freeze ``test_mode="single"`` and
+        can only reach ``mark()`` when ``mark_samples`` is enabled
+        (``station.py:126-136``); the default live calibration sample stays
+        allowed.  SIMULATE and non-MySQL repositories are unaffected.
+        """
+        if not self.live_mode or not isinstance(card.controller.repository,
+                                                 PyMySQLRepository):
+            return False
+        mode = "single" if sample else ("dual" if card.mode_button.isChecked()
+                                        else "single")
+        marking_capable = (not sample) or card.controller.mark_samples
+        return mode == "single" and marking_capable
 
     def _laser_status_text(self) -> str:
         if self.live_mode:
@@ -1092,6 +1128,13 @@ class MainWindow(QMainWindow):
             return False
         if card.controller.phase is not Phase.IDLE:
             return False
+        if self._single_mode_marking_unsupported(card, sample=False):
+            card._error_key = "single_mode_unsupported"
+            card.refresh()
+            self._live_trace(
+                f"PRODUCTION_CYCLE_BLOCKED station={card.station.value} "
+                f"reason=single_mode_unsupported")
+            return False
         try:
             config = self._model_for(part_no)
         except Exception as exc:
@@ -1102,7 +1145,8 @@ class MainWindow(QMainWindow):
         mode = "dual" if card.mode_button.isChecked() else "single"
         selection = CycleSelection(card.station, part_no,
                                    card.staff.currentText().strip() or "Operator", mode,
-                                   str(config.ateq_program))
+                                   str(config.ateq_program),
+                                   date_scheme=self._resolved_date_scheme(config))
         card.controller.start_cycle(selection)
         card.refresh()
         self._live_trace(
@@ -1137,9 +1181,15 @@ class MainWindow(QMainWindow):
                 f"CAL_CYCLE_RESTORE_BLOCKED station={card.station.value} "
                 f"{type(exc).__name__}: {exc}")
             return False
+        if self._single_mode_marking_unsupported(card, sample=True):
+            self._live_trace(
+                f"CAL_CYCLE_RESTORE_BLOCKED station={card.station.value} "
+                f"reason=single_mode_unsupported")
+            return False
         selection = CycleSelection(card.station, part_no,
                                    card.staff.currentText().strip() or "Operator",
-                                   "single", str(config.ateq_program))
+                                   "single", str(config.ateq_program),
+                                   date_scheme=self._resolved_date_scheme(config))
         controller.start_cycle(selection, sample=True)
         card.refresh()
         self._live_trace(
@@ -1162,6 +1212,11 @@ class MainWindow(QMainWindow):
         part_no = card.part_no.currentText().strip()
         if not part_no:
             return False
+        if self._single_mode_marking_unsupported(card, sample=True):
+            self._live_trace(
+                f"CAL_OK_BRIDGE_BLOCKED station={card.station.value} "
+                f"reason=single_mode_unsupported")
+            return False
         if card.controller.record is not None or card.controller.phase is Phase.FAULT:
             try:
                 card.controller.reset()
@@ -1178,7 +1233,8 @@ class MainWindow(QMainWindow):
             return False
         selection = CycleSelection(card.station, part_no,
                                    card.staff.currentText().strip() or "Operator",
-                                   "single", str(config.ateq_program))
+                                   "single", str(config.ateq_program),
+                                   date_scheme=self._resolved_date_scheme(config))
         card.controller.start_cycle(selection, sample=True)
         card.refresh()
         self._live_trace(
@@ -1189,6 +1245,14 @@ class MainWindow(QMainWindow):
     def _model_for(self, part_no: str) -> ModelConfig:
         """Load one committed model configuration (型号参数)."""
         return self.model_settings.load(part_no)
+
+    def _resolved_date_scheme(self, config: ModelConfig) -> str:
+        """Resolve 型号日期方案 → 工位设置 → YYYYMMDD（空值逐级回退）。"""
+        model_value = config.date_scheme if isinstance(getattr(config, "date_scheme", ""), str) else ""
+        station_value = getattr(self.settings, "laser_date_scheme", "")
+        if not isinstance(station_value, str):
+            station_value = ""
+        return model_value.strip() or station_value.strip() or "YYYYMMDD"
 
     def _refresh_runtime_choices(self):
         products = self.model_settings.list_models()
@@ -2083,6 +2147,12 @@ class MainWindow(QMainWindow):
         completed_cycle = controller.record is not None and controller.phase is Phase.COMPLETE
         if not (initial_state or completed_cycle):
             raise RuntimeError("当前测试尚未完成")
+        if self._single_mode_marking_unsupported(card, sample=True):
+            self._live_trace(
+                f"CAL_START_BLOCKED station={station.value} "
+                f"reason=single_mode_unsupported")
+            raise RuntimeError(
+                UiTextCatalog.message(self._language, "single_mode_unsupported"))
         calibration.begin_validation()
         # 校准周期内部冻结型号/人员（单测模式）；样件周期默认不打码。
         if controller.record is None:
@@ -2096,7 +2166,8 @@ class MainWindow(QMainWindow):
                     raise
                 selection = CycleSelection(station, part_no,
                                            card.staff.currentText().strip() or "Operator",
-                                           "single", str(config.ateq_program))
+                                           "single", str(config.ateq_program),
+                                           date_scheme=self._resolved_date_scheme(config))
                 controller.start_cycle(selection, sample=True)
                 card.refresh()
                 self._live_trace(f"CAL_CYCLE_READY station={station.value} cycle={controller.record.cycle_id} program={selection.ateq_program}")

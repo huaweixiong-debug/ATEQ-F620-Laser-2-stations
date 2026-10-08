@@ -6,6 +6,18 @@ from pathlib import Path
 
 import pytest
 
+# 验证机 CreateSymbolicLinkW 超时约 30 秒；pytest 每个 tmp_path 都尝试创建
+# `<name>-current` 便利符号链接。禁用该非必要链接，避免每个用例额外等待。
+try:
+    import _pytest.pathlib as _pytest_pathlib
+
+    def _skip_force_symlink(*_args, **_kwargs):
+        return None
+
+    _pytest_pathlib._force_symlink = _skip_force_symlink
+except Exception:
+    pass
+
 # 项目根目录加入 sys.path，使 `from app...` 在任何工作目录下可用。
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -24,6 +36,13 @@ def _fresh_calibration_state():
     path = os.environ["LEAKTEST_CAL_STATE"]
     if os.path.exists(path):
         os.remove(path)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _isolated_journal_dir(tmp_path, monkeypatch):
+    """每个用例使用独立 journal 目录，绝不触碰 D:\\ATEQ。"""
+    monkeypatch.setenv("LEAKTEST_JOURNAL_DIR", str(tmp_path / "journal"))
     yield
 
 

@@ -42,14 +42,16 @@ def _install_crash_log() -> None:
     threading.excepthook = lambda args: _hook(args.exc_type, args.exc_value, args.exc_traceback)
 
 
-def launch_ui(*, live: bool = False, live_config: Path | None = None) -> int:
+def launch_ui(*, live: bool = False, live_config: Path | None = None,
+              preflight_passed: bool = False) -> int:
     if QApplication is None:
         raise RuntimeError("PySide6 未安装；请运行 pip install PySide6")
     _install_crash_log()
     app = QApplication.instance() or QApplication([])
     try:
         from .ui_replica import MainWindow
-        window = MainWindow(live=live, config_path=live_config)
+        window = MainWindow(live=live, config_path=live_config,
+                            preflight_passed=preflight_passed)
     except Exception as exc:
         message = f"实时硬件 UI 启动阻断：{type(exc).__name__}: {exc}"
         print(message)

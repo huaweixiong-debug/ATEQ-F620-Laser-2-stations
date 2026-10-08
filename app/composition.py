@@ -38,6 +38,7 @@ class ReadOnlyRepository:
     def mark_marked(self, cycle_id, capability=None): raise PermissionError("SHADOW 禁止数据库写入")
     def row_id(self, cycle_id): return None
     def get(self, cycle_id): return None
+    def get_committed(self, cycle_id): return None
     def query(self, text=""): return []
 
 @dataclass(frozen=True)

@@ -98,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode != settings.mode.value:
         print(f"模式与配置不一致: {args.mode} != {settings.mode.value}", file=sys.stderr)
         return 2
+    preflight_passed = False
     if args.preflight or args.mode == RunMode.LIVE.value:
         from .live_preflight import run_preflight
         report = run_preflight(settings)
@@ -105,7 +106,8 @@ def main(argv: list[str] | None = None) -> int:
         if not report.passed:
             print("LIVE_BLOCKED: 预检未全部通过", file=sys.stderr)
             return 2
-        if args.preflight:
+        preflight_passed = True
+        if args.preflight and not args.live_ui:
             return 0
     if args.mode != RunMode.SIMULATE.value and not args.live_ui:
         print(f"模式 {args.mode} 已实现只读预检；生产 UI 需真实设备验收后启用。", file=sys.stderr)
@@ -123,7 +125,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         from .ui import launch_ui
         return launch_ui(live=args.live_ui,
-                         live_config=args.live_config or (config_path if args.live_ui else None))
+                         live_config=args.live_config or (config_path if args.live_ui else None),
+                         preflight_passed=preflight_passed)
     except RuntimeError as exc:
         print(f"UI unavailable: {exc}; use --diagnose for headless mode", file=sys.stderr)
         return 3

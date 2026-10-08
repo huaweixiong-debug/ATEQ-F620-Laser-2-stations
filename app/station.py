@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from uuid import uuid4
 
 from .ateq import AteqRequest, AteqResponse
@@ -101,6 +102,7 @@ class StationController:
             station=self.station, part_no=selection.product_id.strip(), person=selection.person.strip(),
             cycle_id=cycle_id, ateq_program=(selection.ateq_program or self.program).strip(),
             test_mode=selection.test_mode, sample_cycle=sample,
+            date_scheme=selection.date_scheme,
         )
         self.phase, self.error, self.sequence = Phase.READY, "", 0
         self.mark_state, self.mark_job_id, self.mark_receipt = MarkState.NONE, "", ""
@@ -229,8 +231,10 @@ class StationController:
         self.mark_job_id = f"mark-{self.record.cycle_id}"
         self._journal()
         try:
-            committed = self.repository.get(self.record.cycle_id)
-            marked_record = committed if committed is not None else self.record
+            readback = self.repository.get_committed(self.record.cycle_id)
+            if readback is None:
+                raise ValueError("数据库未找到已提交周期记录，禁止打码")
+            marked_record = self._validate_mark_readback(readback)
             receipt = self.marker.mark(marked_record)
             accepted, job_id, receipt_text = self._receipt_values(receipt)
             if not accepted:
@@ -273,6 +277,54 @@ class StationController:
         if isinstance(receipt, bool):
             return receipt, "", ""
         return bool(getattr(receipt, "accepted", False)), str(getattr(receipt, "job_id", "")), str(getattr(receipt, "receipt", ""))
+
+    def _validate_mark_readback(self, readback: TraceRecord) -> TraceRecord:
+        """Fail-closed validation of the committed row used as marker input.
+
+        All checks run before ``marker.mark``; the only value not sourced from
+        the readback is the ``date_scheme`` formatting overlay.  Pass/fail is
+        decided by the readback ``Result`` columns, never by in-memory data.
+        """
+        if not isinstance(readback, TraceRecord):
+            raise ValueError("打码回读类型无效")
+        if readback.station is not self.station:
+            raise ValueError("打码回读工位不一致")
+        if (not isinstance(readback.cycle_id, str) or not readback.cycle_id
+                or readback.cycle_id != self.record.cycle_id):
+            raise ValueError("打码回读周期号不一致")
+        if not isinstance(readback.created_at, datetime):
+            raise ValueError("打码回读时间无效")
+        for name in ("part_no", "person"):
+            value = getattr(readback, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"打码回读字段无效: {name}")
+        scheme = self.record.date_scheme
+        if not isinstance(scheme, str) or not scheme.strip():
+            raise ValueError("打码日期方案无效")
+        readback.date_scheme = scheme.strip()
+        require_second = self.record.test_mode != "single"
+        self._validate_mark_measurement(readback.first, "first")
+        if readback.second is None:
+            if require_second or readback.test_mode == "dual":
+                raise ValueError("打码回读缺少第二次测量")
+        else:
+            self._validate_mark_measurement(readback.second, "second")
+        return readback
+
+    @staticmethod
+    def _validate_mark_measurement(value, name: str) -> None:
+        if not isinstance(value, Measurement):
+            raise ValueError(f"打码回读测量无效: {name}")
+        for field in ("pressure", "leakage"):
+            number = getattr(value, field)
+            if (isinstance(number, bool) or not isinstance(number, (int, float))
+                    or not math.isfinite(float(number))):
+                raise ValueError(f"打码回读数值无效: {name}.{field}")
+        for field in ("pressure_unit", "leakage_unit"):
+            if not isinstance(getattr(value, field), str):
+                raise ValueError(f"打码回读单位无效: {name}.{field}")
+        if not isinstance(value.result, Result) or value.result is not Result.OK:
+            raise ValueError(f"打码回读结果非 OK: {name}")
 
     def reset(self) -> None:
         if self.record is not None and self.phase not in (Phase.IDLE, Phase.COMPLETE, Phase.FAULT):

@@ -1,5 +1,6 @@
 """UI 离屏走查：单工位、无扫码控件、完整打码周期、样件验证桥接。"""
 import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -10,7 +11,8 @@ from PySide6.QtWidgets import QApplication, QLineEdit
 from app.ateq import FakeAteq
 from app.calibration import CalibrationPhase
 from app.model_settings import ModelConfig, ModelSettingsService, PersonnelService
-from app.models import Phase, Result, StationId
+from app.models import Measurement, Phase, RecoveryRecord, Result, StationId, TraceRecord
+from app.repository import PyMySQLRepository
 
 from tests.helpers import make_security
 
@@ -118,6 +120,49 @@ def test_stepcode_edge_ignores_stale_level(window):
     assert card.controller.phase is not Phase.READY
 
 
+def _save_model_date_scheme(window, date_scheme):
+    window.model_settings.save(ModelConfig(part_no=PART, customer_no=PART,
+                                           date_scheme=date_scheme, ateq_program="1"))
+    window._refresh_runtime_choices()
+    window.cards[0].part_no.setCurrentText(PART)
+
+
+def test_production_date_scheme_falls_back_to_station_setting(window):
+    import dataclasses as dc
+
+    card = window.cards[0]
+    _save_model_date_scheme(window, "")
+    window.settings = dc.replace(window.settings, laser_date_scheme="YYMMDD")
+    assert window._prepare_stepcode_production_cycle(card) is True
+    assert card.controller.record.date_scheme == "YYMMDD"
+
+
+def test_production_date_scheme_falls_back_to_default(window):
+    import dataclasses as dc
+
+    card = window.cards[0]
+    _save_model_date_scheme(window, "")
+    window.settings = dc.replace(window.settings, laser_date_scheme="   ")
+    assert window._prepare_stepcode_production_cycle(card) is True
+    assert card.controller.record.date_scheme == "YYYYMMDD"
+
+
+def test_production_date_scheme_keeps_unknown_nonblank(window):
+    card = window.cards[0]
+    _save_model_date_scheme(window, "年方案9")
+    assert window._prepare_stepcode_production_cycle(card) is True
+    assert card.controller.record.date_scheme == "年方案9"
+
+
+def test_calibration_date_scheme_uses_same_resolver(window):
+    import dataclasses as dc
+
+    _save_model_date_scheme(window, "")
+    window.settings = dc.replace(window.settings, laser_date_scheme="YYMMDD")
+    assert window.start_calibration(window.station) is True
+    assert window.cards[0].controller.record.date_scheme == "YYMMDD"
+
+
 def test_calibration_ng_ok_validation(window):
     card = window.cards[0]
     card.part_no.setCurrentText(PART)
@@ -147,6 +192,185 @@ def test_calibration_ng_ok_validation(window):
     # 工位已释放，可开新的生产周期；三灯保持熄灭。
     assert window._prepare_stepcode_production_cycle(card) is True
     assert calibration.indicators == (False, False, False)
+
+
+def _live_like_window(window, tmp_path):
+    repository = PyMySQLRepository(host="127.0.0.1", user="u", password="p",
+                                   database="test")
+    card = window.cards[0]
+    window.live_mode = True
+    window.live_trace_path = tmp_path / "live_trace.log"
+    card.controller.repository = repository
+    card.repository = repository
+    window.repository = repository
+    return card, repository
+
+
+def test_live_single_mode_production_blocked(window, tmp_path):
+    card, repository = _live_like_window(window, tmp_path)
+    card.mode_button.setChecked(False)
+    calls = {"start": [], "select": [], "run": [], "write": [], "refresh": 0}
+    card.controller.start_cycle = lambda selection, **kw: calls["start"].append((selection, kw))
+    card.controller.ateq.select_program = lambda program: calls["select"].append(program)
+    card.controller.ateq.run = lambda request: calls["run"].append(request)
+    card.plc.write_bit = lambda byte, bit, value: calls["write"].append((byte, bit, value))
+    original_refresh = card.refresh
+
+    def refresh():
+        calls["refresh"] += 1
+        original_refresh()
+
+    card.refresh = refresh
+    assert window._prepare_stepcode_production_cycle(card) is False
+    assert calls["start"] == [] and calls["select"] == [] and calls["run"] == []
+    assert calls["write"] == []
+    assert calls["refresh"] >= 1
+    assert card._error_key == "single_mode_unsupported"
+    assert card.controller.phase is Phase.IDLE
+    assert card.controller.record is None
+    trace = window.live_trace_path.read_text(encoding="utf-8")
+    assert "PRODUCTION_CYCLE_BLOCKED" in trace
+    assert "reason=single_mode_unsupported" in trace
+
+
+def test_live_dual_mode_production_still_starts(window, tmp_path):
+    card, repository = _live_like_window(window, tmp_path)
+    card.mode_button.setChecked(True)
+    captured = []
+    original_start = card.controller.start_cycle
+
+    def start_cycle(selection, **kwargs):
+        captured.append((selection, kwargs))
+        return original_start(selection, **kwargs)
+
+    card.controller.start_cycle = start_cycle
+    assert window._prepare_stepcode_production_cycle(card) is True
+    assert len(captured) == 1
+    selection, _ = captured[0]
+    assert selection.test_mode == "dual"
+    assert card.controller.phase is Phase.READY
+
+
+def test_simulate_single_mode_production_still_starts(window):
+    card = window.cards[0]
+    card.mode_button.setChecked(False)
+    captured = []
+    original_start = card.controller.start_cycle
+
+    def start_cycle(selection, **kwargs):
+        captured.append((selection, kwargs))
+        return original_start(selection, **kwargs)
+
+    card.controller.start_cycle = start_cycle
+    assert window._prepare_stepcode_production_cycle(card) is True
+    assert captured[0][0].test_mode == "single"
+    assert card.controller.phase is Phase.READY
+
+
+def test_live_calibration_site_guard_blocks_mark_samples(window, tmp_path):
+    card, repository = _live_like_window(window, tmp_path)
+    card.mode_button.setChecked(True)
+    card.controller.mark_samples = True
+    called = []
+    card.controller.start_cycle = lambda selection, **kw: called.append(selection)
+    with pytest.raises(RuntimeError, match="Dual Test"):
+        window.start_calibration(window.station)
+    calibration = window.calibration[window.station]
+    assert calibration.validation_started is False
+    assert called == []
+
+
+def test_single_mode_unsupported_catalog_all_languages():
+    from app.ui_theme import UiTextCatalog
+
+    for language in UiTextCatalog.LANGUAGES:
+        text = UiTextCatalog.message(language, "single_mode_unsupported")
+        assert text
+        assert "single_mode_unsupported" not in text
+        assert "Dual Test" in text
+
+
+def test_live_default_calibration_sample_still_starts(window, tmp_path, monkeypatch):
+    card, repository = _live_like_window(window, tmp_path)
+    assert card.controller.mark_samples is False
+    card.mode_button.setChecked(True)
+    card.part_no.setCurrentText(PART)
+    card.staff.setCurrentText("张三")
+    card.refresh()
+    assert card.start_validation_button.isEnabled()
+    start_calls = []
+    original_start = card.controller.start_cycle
+
+    def start_cycle(selection, **kwargs):
+        start_calls.append((selection, kwargs))
+        return original_start(selection, **kwargs)
+
+    card.controller.start_cycle = start_cycle
+    write_calls = []
+    card.plc.write_bit = lambda byte, bit, value: write_calls.append((byte, bit, value))
+    connect_calls = []
+    monkeypatch.setattr(PyMySQLRepository, "_connect",
+                        lambda self: connect_calls.append(True))
+    card._indicator_action("start_validation")
+    calibration = window.calibration[window.station]
+    assert card._error_key is None
+    assert calibration.validation_started is True
+    assert calibration.phase is CalibrationPhase.WAIT_NG
+    assert len(start_calls) == 1
+    selection, kwargs = start_calls[0]
+    assert kwargs.get("sample") is True
+    assert selection.test_mode == "single"
+    assert selection.product_id == PART
+    assert selection.station is StationId.A
+    record = card.controller.record
+    assert record.sample_cycle is True
+    assert record.part_no == PART
+    assert record.test_mode == "single"
+    assert card.controller.phase is Phase.READY
+    assert write_calls == []
+    assert connect_calls == []
+    assert isinstance(card.controller.ateq, FakeAteq)
+
+
+def test_journal_dir_uses_env_override(window, tmp_path):
+    assert window.journal_dir == tmp_path / "journal"
+
+
+def test_pending_journal_starts_in_recovery(qapp, tmp_path):
+    from app.journal import CycleJournal
+    from app.ui_replica import MainWindow
+
+    journal_path = tmp_path / "journal" / f"{StationId.A.value}.json"
+    record = TraceRecord(station=StationId.A, part_no=PART, person="张三",
+                         cycle_id="A-20261001120000-abcdef",
+                         created_at=datetime.now(timezone.utc))
+    record.first = Measurement(1.0, 0.1, Result.OK, b"F", "kPa", "ml/min")
+    state = RecoveryRecord(StationId.A, record.cycle_id, Phase.READY, record)
+    CycleJournal(journal_path).write_record(state)
+    w = MainWindow()
+    try:
+        card = w.cards[0]
+        assert card.controller.phase is Phase.FAULT
+        assert card.controller.recovery_required is True
+    finally:
+        w.close()
+        w.deleteLater()
+
+
+def test_live_mainwindow_requires_preflight_token(qapp, tmp_path, monkeypatch):
+    import app.ui_replica as ui_replica
+
+    opened = []
+
+    class BombAteq:
+        def __init__(self, *args, **kwargs):
+            opened.append(True)
+            raise AssertionError("device opened without preflight token")
+
+    monkeypatch.setattr(ui_replica, "SerialAteq", BombAteq)
+    with pytest.raises(RuntimeError, match="LIVE_BLOCKED"):
+        ui_replica.MainWindow(live=True, config_path=tmp_path / "missing.toml")
+    assert opened == []
 
 
 def test_manual_output_permission_and_point_map(window, monkeypatch):

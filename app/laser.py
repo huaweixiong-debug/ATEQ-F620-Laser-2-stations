@@ -241,10 +241,6 @@ class LaserMarker(MarkerPort):
         try:
             self.plc.write_bit(byte, bit, True)
             if not self.plc.read_bit(byte, bit):
-                try:
-                    self.plc.write_bit(byte, bit, False)
-                except Exception:
-                    pass
                 raise RuntimeError(f"激光启动位 M{byte}.{bit} 置位后回读为低")
             self._hold_with_diagnostic(byte, bit)
             self.plc.write_bit(byte, bit, False)
@@ -259,10 +255,20 @@ class LaserMarker(MarkerPort):
                         raise RuntimeError(f"打码完成位 M{done_byte}.{done_bit} 在 {self.done_timeout_s:g} 秒内未置位")
                     time.sleep(0.05)
         except Exception as exc:
+            deenergized = self._deenergize_start_bit(byte, bit)
             self._schedule_clear()
-            return MarkReceipt(False, job_id, f"激光启动失败: {exc}")
+            note = "" if deenergized else "；启动位断电未确认"
+            return MarkReceipt(False, job_id, f"激光启动失败: {exc}{note}")
         self._schedule_clear()
         return MarkReceipt(True, job_id, f"receipt-{job_id}")
+
+    def _deenergize_start_bit(self, byte: int, bit: int) -> bool:
+        """Best-effort start-bit reset; False means the de-energize write failed."""
+        try:
+            self.plc.write_bit(byte, bit, False)
+            return True
+        except Exception:
+            return False
 
     def _hold_with_diagnostic(self, byte: int, bit: int) -> None:
         start = self._clock()

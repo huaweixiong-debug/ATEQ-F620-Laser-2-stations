@@ -31,6 +31,33 @@ def make_writer(tmp_path, name="激光码信息.txt", encoding="gbk"):
     return LaserFileWriter(LaserChannel(tmp_path / name, encoding, "\r\n"))
 
 
+class _SpyWriter:
+    def __init__(self):
+        self.published: list[str] = []
+        self.cleared: list[bool] = []
+
+    def publish(self, text):
+        self.published.append(text)
+
+    def clear(self):
+        self.cleared.append(True)
+
+
+class _SpyPlc(FakePlc):
+    def __init__(self):
+        super().__init__()
+        self.reads: list[tuple[int, int]] = []
+        self.writes: list[tuple[int, int, bool]] = []
+
+    def read_bit(self, byte, bit):
+        self.reads.append((byte, bit))
+        return super().read_bit(byte, bit)
+
+    def write_bit(self, byte, bit, value):
+        self.writes.append((byte, bit, value))
+        return super().write_bit(byte, bit, value)
+
+
 def test_build_mark_text_fields(tmp_path):
     text = build_mark_text(make_record())
     lines = text.split("\n")
@@ -52,6 +79,25 @@ def test_build_mark_text_incomplete_fields():
     record = make_record(person="  ")
     with pytest.raises(ValueError, match="打码字段不完整"):
         build_mark_text(record)
+
+
+@pytest.mark.parametrize("scheme", ["", "BOGUS", "年+月"])
+def test_marker_invalid_date_scheme_never_publishes_or_touches_plc(scheme):
+    from app.date_codes import DateCodeCatalog
+
+    record = make_record()
+    record.date_scheme = scheme
+    writer = _SpyWriter()
+    plc = _SpyPlc()
+    marker = LaserMarker(writer, plc, sim_point_map(), hold_seconds=0.05,
+                         settle_seconds=0.01,
+                         date_code_fn=DateCodeCatalog({}).date_code)
+    receipt = marker.mark(record)
+    assert not receipt.accepted
+    assert writer.published == []
+    assert writer.cleared == []
+    assert plc.writes == []
+    assert plc.reads == []
 
 
 def test_writer_publish_verify_clear(tmp_path):
@@ -123,6 +169,79 @@ def test_marker_rejected_when_start_bit_readback_low(tmp_path):
     receipt = marker.mark(make_record())
     assert not receipt.accepted
     assert "回读为低" in receipt.receipt
+
+
+class _ReadFailingPlc(FakePlc):
+    """Start-bit set succeeds; the readback immediately after it raises."""
+
+    def __init__(self):
+        super().__init__()
+        self.fail_reads = False
+
+    def write_bit(self, byte, bit, value):
+        super().write_bit(byte, bit, value)
+        if value and (byte, bit) == (20, 0):
+            self.fail_reads = True
+
+    def read_bit(self, byte, bit):
+        if self.fail_reads and (byte, bit) == (20, 0):
+            raise ConnectionError("bus fault")
+        return super().read_bit(byte, bit)
+
+
+def test_marker_read_after_set_raises_deenergizes(tmp_path):
+    writer = make_writer(tmp_path)
+    plc = _ReadFailingPlc()
+    marker = LaserMarker(writer, plc, sim_point_map(),
+                         hold_seconds=0.05, settle_seconds=0.01)
+    receipt = marker.mark(make_record())
+    assert not receipt.accepted
+    assert "激光启动失败" in receipt.receipt
+    assert FakePlc.read_bit(plc, 20, 0) is False
+
+
+class _AmbiguousStartPlc(FakePlc):
+    """Start-bit write sets the bit but then raises (acknowledgement lost)."""
+
+    def write_bit(self, byte, bit, value):
+        super().write_bit(byte, bit, value)
+        if value and (byte, bit) == (20, 0):
+            raise ConnectionError("lost ack")
+
+
+def test_marker_ambiguous_start_write_deenergizes_and_schedules_clear(tmp_path):
+    writer = make_writer(tmp_path)
+    plc = _AmbiguousStartPlc()
+    marker = LaserMarker(writer, plc, sim_point_map(), hold_seconds=0.05,
+                         settle_seconds=0.01, clear_after_seconds=0.05)
+    receipt = marker.mark(make_record())
+    assert not receipt.accepted
+    assert FakePlc.read_bit(plc, 20, 0) is False
+    assert (tmp_path / "激光码信息.txt").read_bytes() != b""
+    time.sleep(0.3)
+    assert (tmp_path / "激光码信息.txt").read_bytes() == b""
+
+
+class _ResetFailingPlc(FakePlc):
+    """Start-bit reset (False) always fails; the bit stays energized."""
+
+    def write_bit(self, byte, bit, value):
+        if not value and (byte, bit) == (20, 0):
+            raise ConnectionError("reset circuit fault")
+        super().write_bit(byte, bit, value)
+
+
+def test_marker_reset_write_failure_reports_unconfirmed_and_schedules_clear(tmp_path):
+    writer = make_writer(tmp_path)
+    plc = _ResetFailingPlc()
+    marker = LaserMarker(writer, plc, sim_point_map(), hold_seconds=0.05,
+                         settle_seconds=0.01, clear_after_seconds=0.05)
+    receipt = marker.mark(make_record())
+    assert not receipt.accepted
+    assert "断电未确认" in receipt.receipt
+    assert (tmp_path / "激光码信息.txt").read_bytes() != b""
+    time.sleep(0.3)
+    assert (tmp_path / "激光码信息.txt").read_bytes() == b""
 
 
 def test_marker_done_bit_timeout(tmp_path):

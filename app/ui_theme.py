@@ -112,6 +112,11 @@ class UiTextCatalog:
         "second_error": {"中文": "二测错误：{error}", "English": "Test 2 error: {error}", "Français": "Erreur test 2 : {error}"},
         "label_error": {"中文": "贴标错误：{error}", "English": "Label error: {error}", "Français": "Erreur étiquette : {error}"},
         "calibration_error": {"中文": "校准验证拒绝：{error}", "English": "Calibration validation denied: {error}", "Français": "Validation de calibration refusée : {error}"},
+        "single_mode_unsupported": {
+            "中文": "单测打码未启用：请切换 Dual Test / 双测 后重新启动周期（数据库结构审批前禁止单测打码）",
+            "English": "Single-mode marking is not enabled: switch to Dual Test before starting the cycle (pending schema approval)",
+            "Français": "Marquage en mode simple non activé : passez en Dual Test avant de démarrer le cycle (approbation du schéma en attente)",
+        },
         "reprint_denied": {"中文": "重打拒绝：{error}", "English": "Reprint denied: {error}", "Français": "Réimpression refusée : {error}"},
         "reset_error": {"中文": "复位错误：{error}", "English": "Reset error: {error}", "Français": "Erreur reset : {error}"},
         "query_range": {"中文": "开始时间不能晚于结束时间", "English": "Start must be before finish", "Français": "Le début doit précéder la fin"},

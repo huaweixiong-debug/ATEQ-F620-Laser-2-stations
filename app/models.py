@@ -137,6 +137,7 @@ class CycleSelection:
     person: str
     test_mode: str
     ateq_program: str
+    date_scheme: str = "YYYYMMDD"
 
     def __post_init__(self) -> None:
         if self.test_mode not in ("single", "dual"):
@@ -144,6 +145,12 @@ class CycleSelection:
         required = (self.product_id, self.person, self.ateq_program)
         if any(not str(value).strip() for value in required):
             raise ValueError("周期冻结数据不完整")
+        if not isinstance(self.date_scheme, str):
+            raise ValueError(f"日期方案无效: {self.date_scheme!r}")
+        scheme = self.date_scheme.strip()
+        if not scheme:
+            raise ValueError("日期方案不能为空")
+        object.__setattr__(self, "date_scheme", scheme)
 
 
 class MarkState(str, Enum):

@@ -57,6 +57,13 @@ class FakeRepository:
             record = self.records.get(cycle_id)
             return deepcopy(record) if record is not None else None
 
+    def get_committed(self, cycle_id: str) -> TraceRecord | None:
+        # Fake semantics: records is the fake's only committed store, so this
+        # equals get(); cache/DB divergence is modeled by test doubles.
+        with self._lock:
+            record = self.records.get(cycle_id)
+            return deepcopy(record) if record is not None else None
+
     def count_ok(self) -> int:
         return sum(1 for row in self.records.values() if row.second and row.second.result is Result.OK)
 
@@ -235,6 +242,21 @@ class PyMySQLRepository:
             record = self.records.get(cycle_id)
             if record is not None:
                 return deepcopy(record)
+        table = self._cycle_station.get(cycle_id, f"info_{StationId.A.value}")
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(self._select_sql(table) + " WHERE `cycle_id`=%s", (cycle_id,))
+                values = cursor.fetchone()
+        return self._row_to_record(table, values) if values else None
+
+    def get_committed(self, cycle_id: str) -> TraceRecord | None:
+        """Fresh committed-row readback: always SELECTs, never reads the cache.
+
+        Connection/SELECT exceptions propagate unchanged; ``None`` strictly
+        means the row is absent, so callers can fail closed on both cases and
+        keep them distinguishable.
+        """
+        self._require_verified()
         table = self._cycle_station.get(cycle_id, f"info_{StationId.A.value}")
         with self._connect() as connection:
             with connection.cursor() as cursor:
