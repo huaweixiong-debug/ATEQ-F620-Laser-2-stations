@@ -54,7 +54,7 @@ class Settings:
     laser_filename: str = "激光打码.txt"
     laser_encoding: str = "gbk"
     laser_newline: str = "\r\n"
-    laser_hold_seconds: float = 1.0
+    laser_hold_seconds: float = 2.0
     laser_settle_seconds: float = 0.2
     laser_clear_after_seconds: float = 10.0
     laser_wait_done: bool = False
@@ -127,7 +127,7 @@ class Settings:
         except ValueError as exc: raise ValueError("无效 PLC IP") from exc
         database_port = int(values.get("database_port", 3306))
         if not 1 <= database_port <= 65535: raise ValueError("无效数据库端口")
-        hold = float(values.get("laser_hold_seconds", 1.0))
+        hold = float(values.get("laser_hold_seconds", 2.0))
         settle = float(values.get("laser_settle_seconds", 0.2))
         clear_after = float(values.get("laser_clear_after_seconds", 10.0))
         done_timeout = float(values.get("laser_done_timeout_s", 10.0))

@@ -332,6 +332,18 @@ def test_live_default_calibration_sample_still_starts(window, tmp_path, monkeypa
     assert isinstance(card.controller.ateq, FakeAteq)
 
 
+def test_live_clear_laser_start_bit(window):
+    window.plc.write_bit(20, 0, True)      # 模拟点位表 laser_start = M20.0
+    window._clear_laser_start_bit()
+    assert window.plc.read_bit(20, 0) is False
+
+
+def test_live_clear_laser_start_failure_fails_closed(window):
+    window.plc.connected = False
+    with pytest.raises(RuntimeError, match="清零打码位"):
+        window._clear_laser_start_bit()
+
+
 def test_pressure_alarm_poll_updates_label(window):
     import dataclasses as dc
 

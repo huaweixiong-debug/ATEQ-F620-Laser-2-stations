@@ -954,6 +954,10 @@ class MainWindow(QMainWindow):
             self.plc = FakePlc()
             self.repository = FakeRepository(self.settings)
             self.marker = FakeMarker()
+        if self.live_mode:
+            # 现场要求：UI 启动时清零本工位打码请求位（M888/M889 锁存残留
+            # 会在 PLC 运行时被误当作打码请求）；清零失败则拒绝启动（fail-closed）。
+            self._clear_laser_start_bit()
         self.calibration = {s: Calibration(station=s, initial_due=True) for s in StationId}
         self._calibration_state_path = Path(
             os.environ.get("LEAKTEST_CAL_STATE", r"D:\ATEQ\calibration_state.json"))
@@ -995,6 +999,18 @@ class MainWindow(QMainWindow):
         # Apply the selected catalog before the first frame is shown.
         self.language_selector.setCurrentText(self._language)
         self._apply_language(self._language)
+
+    def _clear_laser_start_bit(self) -> None:
+        """LIVE 启动清零：强制复位本工位打码请求位（socket 残留不得触发打码）。"""
+        if not self.point_map.has("laser_start"):
+            return
+        byte, bit = self.point_map.address("laser_start")
+        try:
+            self.plc.write_bit(byte, bit, False)
+        except Exception as exc:
+            raise RuntimeError(
+                f"LIVE 启动清零打码位 M{byte}.{bit} 失败: {type(exc).__name__}: {exc}") from exc
+        self._live_trace(f"LASER_START_CLEARED station={self.station.value} M{byte}.{bit}")
 
     def _build_journal_dir(self) -> Path:
         """Durable per-station journal directory.
