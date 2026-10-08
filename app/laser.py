@@ -2,8 +2,8 @@
 
 移植自 xiezhong-heating（laser_files.py / live_laser.py），按本项目需求简化：
 
-1. 打码内容是 8 个文本字段（日期/产品型号/测试压力1/泄漏量1/测试压力2/
-   泄漏量2/结果/操作工），单 TXT 文件（无二维码文件、无客户码分配）。
+1. 打码内容是 6 行文本（时间/产品型号/负压压力+负压泄漏/正压压力+正压泄漏/
+   结果/操作工），单 TXT 文件（无二维码文件、无客户码分配）。
 2. 写文件（临时文件 + os.replace + 回读字节校验）成功后才允许触碰 PLC；
    任何文件失败都绝不发出打码脉冲（fail-closed）。
 3. 启动位脉冲：置位 → 保持 hold_seconds（带一次回读诊断）→ 复位 →
@@ -27,7 +27,7 @@ from .date_codes import DateCodeCatalog, DateCodeError
 from .models import Measurement, TraceRecord
 
 DEFAULT_TEMPLATE: tuple[str, ...] = (
-    "{date}", "{part_no}", "{p1}", "{l1}", "{p2}", "{l2}", "{result}", "{person}",
+    "{time}", "{part_no}", "{p1} {l1}", "{p2} {l2}", "{result}", "{person}",
 )
 
 
@@ -188,6 +188,7 @@ def build_mark_text(record: TraceRecord, *, template: tuple[str, ...] = DEFAULT_
                 raise
     values = {
         "date": date_code,
+        "time": record.created_at.astimezone().strftime("%Y-%m-%d %H:%M:%S"),
         "part_no": record.part_no.strip(),
         "p1": _measurement_text(record.first, "pressure"),
         "l1": _measurement_text(record.first, "leakage"),
@@ -196,8 +197,8 @@ def build_mark_text(record: TraceRecord, *, template: tuple[str, ...] = DEFAULT_
         "result": measurement.result.value,
         "person": record.person.strip(),
     }
-    if any(not values[key] for key in ("date", "part_no", "result", "person")):
-        raise ValueError(f"打码字段不完整: {sorted(key for key in ('date', 'part_no', 'result', 'person') if not values[key])}")
+    if any(not values[key] for key in ("time", "part_no", "result", "person")):
+        raise ValueError(f"打码字段不完整: {sorted(key for key in ('time', 'part_no', 'result', 'person') if not values[key])}")
     lines = [line.format_map(values) for line in template]
     return "\n".join(lines)
 

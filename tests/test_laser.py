@@ -59,10 +59,12 @@ class _SpyPlc(FakePlc):
 
 
 def test_build_mark_text_fields(tmp_path):
-    text = build_mark_text(make_record())
+    record = make_record()
+    text = build_mark_text(record)
     lines = text.split("\n")
-    assert lines == ["20260919", "E118015100", "500.123Kpa", "0.457ml/min",
-                     "-45.679Kpa", "1.234ml/min", "OK", "张三"]
+    expected_time = record.created_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    assert lines == [expected_time, "E118015100", "500.123Kpa 0.457ml/min",
+                     "-45.679Kpa 1.234ml/min", "OK", "张三"]
 
 
 def test_build_mark_text_dual_requires_second():
@@ -123,11 +125,15 @@ def test_marker_happy_path_pulses_and_clears(tmp_path):
     marker = LaserMarker(writer, plc, sim_point_map(),
                          hold_seconds=0.05, settle_seconds=0.01,
                          clear_after_seconds=0.05)
-    receipt = marker.mark(make_record())
+    record = make_record()
+    receipt = marker.mark(record)
     assert isinstance(receipt, MarkReceipt) and receipt.accepted
     assert receipt.job_id == "mark-A-20260919120000-ab12cd"
-    # 文件内容 = 打码文本；启动位脉冲结束必须回到低电平。
-    assert (tmp_path / "激光码信息.txt").read_bytes() == "20260919\r\nE118015100\r\n500.123Kpa\r\n0.457ml/min\r\n-45.679Kpa\r\n1.234ml/min\r\nOK\r\n张三\r\n".encode("gbk")
+    # 文件内容 = 打码文本（6 行）；启动位脉冲结束必须回到低电平。
+    expected_time = record.created_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    expected = (f"{expected_time}\r\nE118015100\r\n500.123Kpa 0.457ml/min\r\n"
+                "-45.679Kpa 1.234ml/min\r\nOK\r\n张三\r\n").encode("gbk")
+    assert (tmp_path / "激光码信息.txt").read_bytes() == expected
     assert plc.read_bit(20, 0) is False
     # 10 秒自毁：clear_after 到期后文件被清空。
     time.sleep(0.3)
