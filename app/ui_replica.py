@@ -513,11 +513,13 @@ class StationPanel(QFrame):
         return self.calibration_provider(self.station) if self.calibration_provider else None
 
     def _positive_hold_guard(self) -> None:
-        """正压保压判定：StepCode=5 时判定一次，0=异常 → 终止测试并脉冲。
+        """正压保压判定：StepCode=5 时判定一次，异常 → 终止测试并脉冲。
 
-        现场约定：A 工位保压正常信号 = M886、异常终止输出 = M885；B 工位
-        正常信号 = M887、异常终止输出 = M884。异常时把终止输出置 1 保持
-        2 秒再复位，然后抛出异常中止本次监视（走既有故障/恢复路径）。
+        现场约定（2026-10-08）：本工位保压正常信号 = pressure_alarm
+        （A=M886 / B=M887），对方工位开关 = pressure_alarm_peer（A=M887 /
+        B=M886）；**两端开关都必须为 1**，任一为 0 即异常：把本工位终止
+        输出 pressure_trip（A=M885 / B=M884）置 1 保持 2 秒再复位，然后抛
+        出异常中止本次监视（走既有故障/恢复路径）。
         仅 LIVE + 二次测试（正压）生效；读失败不误报。
         """
         if not getattr(self.window(), "live_mode", False):
@@ -527,23 +529,30 @@ class StationPanel(QFrame):
         if not (self.point_map.has("pressure_alarm") and self.point_map.has("pressure_trip")):
             return
         trace = getattr(self.window(), "_live_trace", None)
-        byte, bit = self.point_map.address("pressure_alarm")
-        try:
-            normal = bool(self.plc.read_bit(byte, bit))
-        except Exception as exc:
-            if trace is not None:
-                trace(f"PRESSURE_SWITCH_READ_FAILED station={self.station.value} "
-                      f"{type(exc).__name__}: {exc}")
-            return
-        if normal:
+        names = ["pressure_alarm"]
+        if self.point_map.has("pressure_alarm_peer"):
+            names.append("pressure_alarm_peer")
+        readings = []
+        for name in names:
+            byte, bit = self.point_map.address(name)
+            try:
+                value = bool(self.plc.read_bit(byte, bit))
+            except Exception as exc:
+                if trace is not None:
+                    trace(f"PRESSURE_SWITCH_READ_FAILED station={self.station.value} "
+                          f"{name}=M{byte}.{bit} {type(exc).__name__}: {exc}")
+                return
+            readings.append((byte, bit, value))
+        states = " ".join(f"M{b}.{i}={'1' if v else '0'}" for b, i, v in readings)
+        if all(v for _b, _i, v in readings):
             if trace is not None:
                 trace(f"PRESSURE_SWITCH_OK station={self.station.value} step5 "
-                      f"M{byte}.{bit}=1 继续测试")
+                      f"{states} 继续测试")
             return
         trip_byte, trip_bit = self.point_map.address("pressure_trip")
         if trace is not None:
             trace(f"PRESSURE_SWITCH_ABNORMAL station={self.station.value} step5 "
-                  f"M{byte}.{bit}=0 → M{trip_byte}.{trip_bit} 置 1 保持 "
+                  f"{states} → M{trip_byte}.{trip_bit} 置 1 保持 "
                   f"{self._pressure_trip_seconds:g} 秒并终止测试")
         try:
             self.plc.write_bit(trip_byte, trip_bit, True)
@@ -554,7 +563,7 @@ class StationPanel(QFrame):
                 trace(f"PRESSURE_TRIP_WRITE_FAILED station={self.station.value} "
                       f"{type(exc).__name__}: {exc}")
         raise RuntimeError(
-            f"正压保压阶段压力开关异常（M{byte}.{bit}=0），终止测试")
+            f"正压保压阶段压力开关异常（{states}），终止测试")
 
     def set_pressure_alarm(self, active: bool) -> None:
         """PLC->PC 压力开关报警显示（只读轮询，不参与联锁）。"""

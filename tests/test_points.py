@@ -109,6 +109,7 @@ sample = "M58.3"
 isolation_init = "M58.2"
 shield_cylinder = "M111.3"
 pressure_alarm = "M110.6"
+pressure_alarm_peer = "M110.7"
 pressure_trip = "M110.5"
 """
 
@@ -122,6 +123,7 @@ def test_fx_profile_parses_high_m_addresses(tmp_path):
     assert point_map.address("shield_cylinder") == (111, 3)   # M891
     assert point_map.address("isolation_init") == (58, 2)     # M466
     assert point_map.address("pressure_alarm") == (110, 6)    # M886
+    assert point_map.address("pressure_alarm_peer") == (110, 7)  # M887
     assert point_map.address("pressure_trip") == (110, 5)     # M885
 
 
