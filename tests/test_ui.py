@@ -421,6 +421,8 @@ def _guard_window(window, tmp_path):
     window.live_mode = True
     window.live_trace_path = tmp_path / "live_trace.log"   # 不污染真实日志
     card._pressure_trip_seconds = 0.0
+    card._pressure_window_seconds = 0.4
+    card._pressure_on_seconds = 0.0
     return card
 
 
@@ -458,6 +460,48 @@ def test_positive_hold_guard_only_during_second_test(window, tmp_path):
     spy.bits[(110, 6)] = False
     card._positive_hold_guard()
     assert spy.writes == []
+
+
+class _DelayedSwitch:
+    """前 N 次读取返回 OFF，之后返回 ON（模拟保压建立过程）。"""
+
+    def __init__(self, off_reads=2):
+        self.off_reads = off_reads
+        self.reads = 0
+        self.writes = []
+
+    def read_bit(self, byte, bit):
+        self.reads += 1
+        return self.reads > self.off_reads
+
+    def write_bit(self, byte, bit, value):
+        self.writes.append((byte, bit, bool(value)))
+
+
+def test_positive_hold_guard_waits_for_on_duration(window, tmp_path):
+    card = _guard_window(window, tmp_path)
+    card._pressure_window_seconds = 2.0
+    card._pressure_on_seconds = 0.2
+    spy = _DelayedSwitch(off_reads=2)
+    card.plc = spy
+    card.controller.phase = Phase.TEST_2
+    card._positive_hold_guard()           # 窗口内 ON 持续达标 → 不抛异常
+    assert spy.writes == []
+    trace_text = (tmp_path / "live_trace.log").read_text(encoding="utf-8")
+    assert "PRESSURE_SWITCH_OK" in trace_text
+
+
+def test_positive_hold_guard_ng_when_on_never_reaches_required(window, tmp_path):
+    card = _guard_window(window, tmp_path)
+    card._pressure_window_seconds = 0.5
+    card._pressure_on_seconds = 1.0       # 窗口短于 1 秒 → 不可能达标
+    spy = _PlcSpy()
+    card.plc = spy
+    card.controller.phase = Phase.TEST_2
+    spy.bits[(110, 6)] = True             # 即使一直 ON 也不足 1 秒 → NG
+    with pytest.raises(RuntimeError, match="压力开关异常"):
+        card._positive_hold_guard()
+    assert spy.writes == [(110, 5, True), (110, 5, False)]
 
 
 class _ReconnectStub:
@@ -521,12 +565,12 @@ def test_pressure_alarm_poll_updates_label(window):
     window.point_map = points
     assert window.pressure_alarm_timer.interval() == 2000
     assert card.pressure_alarm_label.isHidden() is True
-    window.plc.write_bit(110, 6, True)
+    window.plc.write_bit(110, 6, False)   # 开关=0 → 异常 → 显示报警
     window._poll_pressure_alarm()
     assert card.pressure_alarm_label.isHidden() is False
     assert "压力开关报警" in card.pressure_alarm_label.text()
     assert card.indicators["pressure"].property("state") == "ng"
-    window.plc.write_bit(110, 6, False)
+    window.plc.write_bit(110, 6, True)    # 开关=1 → 正常 → 隐藏
     window._poll_pressure_alarm()
     assert card.pressure_alarm_label.isHidden() is True
     assert card.indicators["pressure"].property("state") == "ok"
