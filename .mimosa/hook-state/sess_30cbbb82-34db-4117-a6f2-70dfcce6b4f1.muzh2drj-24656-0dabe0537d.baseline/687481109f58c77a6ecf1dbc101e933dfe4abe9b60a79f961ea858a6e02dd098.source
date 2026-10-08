@@ -20,11 +20,12 @@ class StationId(str, Enum):
 
 class Phase(str, Enum):
     IDLE = "空闲"
+    WAIT_SCAN = "等待扫码"
     READY = "就绪"
     TEST_1 = "第一次测试"
     WAIT_2 = "等待第二次测试"
     TEST_2 = "第二次测试"
-    MARKING = "打码"
+    LABELING = "贴标"
     COMPLETE = "完成"
     CALIBRATION = "校准"
     FAULT = "故障"
@@ -76,32 +77,30 @@ class Measurement:
 @dataclass
 class TraceRecord:
     station: StationId
+    serial_no: str
+    code_2d: str
     part_no: str = ""
     person: str = ""
     first: Measurement | None = None
     second: Measurement | None = None
-    marked: bool = False
-    marked_at: datetime | None = None
+    labeled: bool = False
     cycle_id: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    customer_no: str = ""
+    template_path: str = ""
     ateq_program: str = ""
     test_mode: str = "dual"
-    sample_cycle: bool = False
-    date_scheme: str = "YYYYMMDD"
-    daily_sequence: str = ""  # 当日序号（打码前由界面计算写入，如 20261008A0001）
 
     def to_dict(self) -> dict:
         return {
-            "station": self.station.value, "part_no": self.part_no,
-            "person": self.person,
-            "first": self.first.to_dict() if self.first else None,
+            "station": self.station.value, "serial_no": self.serial_no,
+            "code_2d": self.code_2d, "part_no": self.part_no,
+            "person": self.person, "first": self.first.to_dict() if self.first else None,
             "second": self.second.to_dict() if self.second else None,
-            "marked": self.marked,
-            "marked_at": self.marked_at.astimezone(timezone.utc).isoformat() if self.marked_at else None,
-            "cycle_id": self.cycle_id,
+            "labeled": self.labeled, "cycle_id": self.cycle_id,
             "created_at": self.created_at.astimezone(timezone.utc).isoformat(),
+            "customer_no": self.customer_no, "template_path": self.template_path,
             "ateq_program": self.ateq_program, "test_mode": self.test_mode,
-            "sample_cycle": self.sample_cycle, "date_scheme": self.date_scheme,
         }
 
     @classmethod
@@ -111,54 +110,47 @@ class TraceRecord:
         timestamp = datetime.fromisoformat(value["created_at"])
         if timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=timezone.utc)
-        marked_at = None
-        if value.get("marked_at"):
-            marked_at = datetime.fromisoformat(value["marked_at"])
-            if marked_at.tzinfo is None:
-                marked_at = marked_at.replace(tzinfo=timezone.utc)
         return cls(
-            station=StationId(value["station"]), part_no=str(value.get("part_no", "")),
+            station=StationId(value["station"]), serial_no=str(value["serial_no"]),
+            code_2d=str(value["code_2d"]), part_no=str(value.get("part_no", "")),
             person=str(value.get("person", "")),
             first=Measurement.from_dict(value["first"]) if value.get("first") else None,
             second=Measurement.from_dict(value["second"]) if value.get("second") else None,
-            marked=bool(value.get("marked", False)), marked_at=marked_at,
-            cycle_id=str(value["cycle_id"]), created_at=timestamp,
+            labeled=bool(value.get("labeled", False)), cycle_id=str(value["cycle_id"]),
+            created_at=timestamp, customer_no=str(value.get("customer_no", "")),
+            template_path=str(value.get("template_path", "")),
             ateq_program=str(value.get("ateq_program", "")),
             test_mode=str(value.get("test_mode", "dual")),
-            sample_cycle=bool(value.get("sample_cycle", False)),
-            date_scheme=str(value.get("date_scheme", "YYYYMMDD")),
         )
 
 
 @dataclass(frozen=True)
-class CycleSelection:
-    """Immutable model/operator snapshot frozen when a hardware cycle starts."""
+class StationSelection:
+    """Immutable model/operator/barcode snapshot for one production cycle."""
     station: StationId
     product_id: str
     person: str
     test_mode: str
+    serial_no: str
+    code_2d: str
+    customer_no: str
     ateq_program: str
-    date_scheme: str = "YYYYMMDD"
+    template_path: str
 
     def __post_init__(self) -> None:
         if self.test_mode not in ("single", "dual"):
             raise ValueError(f"检测模式无效: {self.test_mode}")
-        required = (self.product_id, self.person, self.ateq_program)
+        required = (self.product_id, self.person, self.serial_no, self.code_2d,
+                    self.customer_no, self.ateq_program, self.template_path)
         if any(not str(value).strip() for value in required):
             raise ValueError("周期冻结数据不完整")
-        if not isinstance(self.date_scheme, str):
-            raise ValueError(f"日期方案无效: {self.date_scheme!r}")
-        scheme = self.date_scheme.strip()
-        if not scheme:
-            raise ValueError("日期方案不能为空")
-        object.__setattr__(self, "date_scheme", scheme)
 
 
-class MarkState(str, Enum):
+class PrintState(str, Enum):
     NONE = "NONE"
     INTENT = "INTENT"
-    PULSED = "PULSED"
-    MARKED = "MARKED"
+    ACCEPTED = "ACCEPTED"
+    LABELED = "LABELED"
     AMBIGUOUS = "AMBIGUOUS"
 
 
@@ -174,14 +166,14 @@ class RecoveryRecord:
     db_commits: list[str] = field(default_factory=list)
     ateq_intents: list[dict] = field(default_factory=list)
     ateq_results: list[dict] = field(default_factory=list)
-    mark_state: MarkState = MarkState.NONE
-    mark_job_id: str = ""
-    mark_receipt: str = ""
+    print_state: PrintState = PrintState.NONE
+    print_job_id: str = ""
+    print_receipt: str = ""
     error: str = ""
     recovery_required: bool = False
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
-    VERSION = 4
+    VERSION = 3
 
     def to_dict(self) -> dict:
         stamp = self.updated_at.astimezone(timezone.utc)
@@ -196,11 +188,11 @@ class RecoveryRecord:
             "db_commits": list(self.db_commits),
             "ateq_intents": list(self.ateq_intents),
             "ateq_results": list(self.ateq_results),
-            "mark_state": self.mark_state.value,
-            "mark_job_id": self.mark_job_id,
-            "mark_receipt": self.mark_receipt,
-            "receipt": self.mark_receipt,
-            "mark_intent": self.mark_state in (MarkState.INTENT, MarkState.PULSED, MarkState.AMBIGUOUS),
+            "print_state": self.print_state.value,
+            "print_job_id": self.print_job_id,
+            "print_receipt": self.print_receipt,
+            "receipt": self.print_receipt,
+            "print_intent": self.print_state in (PrintState.INTENT, PrintState.ACCEPTED, PrintState.AMBIGUOUS),
             "error": self.error,
             "recovery_required": self.recovery_required,
             "updated_at": stamp.isoformat(),
@@ -226,8 +218,8 @@ class RecoveryRecord:
                    [str(x) for x in value.get("db_commits", [])],
                    [dict(x) for x in value.get("ateq_intents", [])],
                    [dict(x) for x in value.get("ateq_results", [])],
-                   MarkState(value.get("mark_state", "NONE")),
-                   str(value.get("mark_job_id", "")), str(value.get("mark_receipt", value.get("receipt", ""))),
+                   PrintState(value.get("print_state", "NONE")),
+                   str(value.get("print_job_id", "")), str(value.get("print_receipt", value.get("receipt", ""))),
                    str(value.get("error", "")), bool(value.get("recovery_required", False)), stamp)
 
 @dataclass(frozen=True)

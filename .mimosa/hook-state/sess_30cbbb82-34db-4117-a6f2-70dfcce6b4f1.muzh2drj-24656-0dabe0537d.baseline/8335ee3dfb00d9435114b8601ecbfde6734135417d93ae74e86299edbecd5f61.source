@@ -1,0 +1,14 @@
+# Generated from the Python 3.10 verification environment on 2026-08-15.
+# PyMySQL/python-snap7 are intentionally absent: production adapters remain
+# fail-closed until their protocol and field hardware are approved.
+altgraph==0.17.5
+cryptography==46.0.7
+packaging==26.0
+pyinstaller==6.22.0
+pyinstaller-hooks-contrib==2026.6
+pyserial==3.5
+PySide6==6.11.1
+PySide6_Addons==6.11.1
+PySide6_Essentials==6.11.1
+pytest==9.1.1
+tomli==2.4.1

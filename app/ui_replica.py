@@ -425,6 +425,19 @@ class StationPanel(QFrame):
         date_code = record.created_at.astimezone().strftime("%Y%m%d")
         return f"{date_code}{record.station.value}{min(int(sequence), 9999):04d}"
 
+    def _stash_daily_sequence(self, record) -> None:
+        """把"当日序号"写入记录，供打码文本第五行使用。
+
+        与记录表"当日序号"列同源（按本地日期 + 产品型号，每天每型号从
+        0001 起）；计算失败则留空，不影响打码主体字段。
+        """
+        try:
+            sequences = self._daily_sequence_map(self._records())
+            record.daily_sequence = self._daily_sequence_text(
+                record, sequences.get(record.cycle_id))
+        except Exception:
+            record.daily_sequence = ""
+
     @staticmethod
     def _configure_table(table):
         header = table.horizontalHeader()
@@ -786,6 +799,9 @@ class StationPanel(QFrame):
         if trace is not None:
             trace(f"{self.station.value} MARK_REQUEST cycle="
                  f"{getattr(self.controller.record, 'cycle_id', '')}")
+        record = self.controller.record
+        if record is not None:
+            self._stash_daily_sequence(record)
         try:
             marked = self.controller.mark()
             if marked:
@@ -807,6 +823,7 @@ class StationPanel(QFrame):
         try:
             self.security.require("remark")
             if self.controller.record is None: raise RuntimeError("没有可重打码周期")
+            self._stash_daily_sequence(self.controller.record)
             marked = self.controller.remark()
             if not marked:
                 raise RuntimeError("重打码未确认")
@@ -2525,7 +2542,7 @@ class MainWindow(QMainWindow):
             self.calibration_status.setText({"中文": "校准错误：样件顺序无效", "English": "Calibration error: invalid sample order", "Français": "Erreur de calibration : ordre d'échantillon invalide"}[self._language])
     def resolve_recovery(self, station, reason="UI 人工确认"):
         try:
-            self.security.require("recovery_resolve"); card=self._card_for_station(station); card.controller.resolve_recovery(reason); card.reconnect_plc(); card.refresh(); self.recovery_status.setText({"中文": f"工位 {station.value} 已审计归档", "English": f"Station {station.value} archived", "Français": f"Poste {station.value} archivé"}[self._language])
+            self.security.require("recovery_resolve"); card=self._card_for_station(station); card.controller.resolve_recovery(reason); card._error_key = None; card.reconnect_plc(); card.refresh(); self.recovery_status.setText({"中文": f"工位 {station.value} 已审计归档", "English": f"Station {station.value} archived", "Français": f"Poste {station.value} archivé"}[self._language])
         except Exception: self.recovery_status.setText({"中文": "恢复拒绝：权限不足", "English": "Recovery denied: permission required", "Français": "Récupération refusée : autorisation requise"}[self._language])
 
 

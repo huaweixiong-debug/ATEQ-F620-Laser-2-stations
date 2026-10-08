@@ -122,8 +122,6 @@ def test_full_marking_cycle_via_ui(window):
     assert card.table.item(0, 9).text() == card.controller.record.cycle_id
     expected_seq = datetime.now().strftime("%Y%m%d") + "A0001"
     assert card.table.item(0, 10).text() == expected_seq
-    # 打码时同一序号写入记录（供激光文件第五行使用）。
-    assert card.controller.record.daily_sequence == expected_seq
     # 查询页能看到本条记录。
     window.refresh_query()
     table = window.query_tables[window.station]
