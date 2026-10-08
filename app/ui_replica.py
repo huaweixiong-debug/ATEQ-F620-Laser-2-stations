@@ -336,8 +336,18 @@ class StationPanel(QFrame):
         self.staff.blockSignals(False)
         self._product_changed()
 
+    def _apply_mode_caption(self, language: str) -> None:
+        """按当前勾选状态显示单/双测；语言刷新不得把文字写成固定的"单测"。"""
+        dual = self.mode_button.isChecked()
+        labels = {
+            "中文": ("双测", "单测"),
+            "English": ("Dual Test", "Single Test"),
+            "Français": ("Test double", "Test simple"),
+        }.get(language, ("双测", "单测"))
+        self.mode_button.setText(f"{labels[0] if dual else labels[1]} {self.station.value}")
+
     def _mode_changed(self, dual):
-        self.mode_button.setText(f"{'Dual Test / 双测' if dual else 'Single Test / 单测'} {self.station.value}")
+        self._apply_mode_caption(getattr(self.window(), "_language", "中文"))
         self._product_changed()
 
     def _product_changed(self, *_args):
@@ -1900,7 +1910,7 @@ class MainWindow(QMainWindow):
                     continue
                 label.setText(label_text)
                 StationPanel._fit_indicator_label(label)
-            card.mode_button.setText({"中文": f"单测 {station.value}", "English": f"Single Test {station.value}", "Français": f"Test simple {station.value}"}[value])
+            card._apply_mode_caption(value)
             for signal, _, _ in MANUAL_NAMES:
                 label_widget = self.findChild(QLabel, f"manual_label_{signal}_{station.value}")
                 titles = {"clamp": {"中文": "夹紧", "English": "Clamp", "Français": "Serrage"}, "transfer": {"中文": "移载", "English": "Transfer", "Français": "Transfert"}, "block": {"中文": "封堵", "English": "Blocking", "Français": "Obstruction"}, "stamp": {"中文": "盖章", "English": "Stamp", "Français": "Timbre"}, "door_disable": {"中文": "安全门使能/禁用", "English": "Door enable/disable", "Français": "Porte activer/désactiver"}, "manual": {"中文": "自动/手动", "English": "Automatic/Manual", "Français": "Automatique/Manuel"}}

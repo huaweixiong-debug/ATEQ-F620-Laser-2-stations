@@ -64,6 +64,20 @@ def test_single_station_and_no_scan_widgets(window):
     assert card.table.horizontalHeader().stretchLastSection() is False
 
 
+def test_mode_button_defaults_to_dual_and_caption_follows_state(window):
+    card = window.cards[0]
+    assert card.mode_button.isChecked() is True          # 默认双测
+    assert "双测" in card.mode_button.text()
+    card.mode_button.setChecked(False)
+    assert "单测" in card.mode_button.text()
+    card.mode_button.setChecked(True)
+    assert "双测" in card.mode_button.text()
+    window._apply_language("English")
+    assert "Dual Test" in card.mode_button.text()
+    window._apply_language("中文")
+    assert "双测" in card.mode_button.text()
+
+
 def test_full_marking_cycle_via_ui(window):
     card = window.cards[0]
     card.part_no.setCurrentText(PART)
