@@ -1,8 +1,8 @@
 @echo off
-rem 现场实时启动（需 live.toml 预检通过）
-rem A 电脑（station=A）：只启动本机 UI。
-rem B 电脑（station=B）：本机 UI 起来后（relay 就绪），自动经 SSH 拉起 A 机桌面 UI
-rem                       （计划任务 ATEQ_A_UI，见 tools\install_a_ui_task.cmd）。
+rem Live UI launcher (requires a passing preflight in live.toml).
+rem Station A: starts only the local UI.
+rem Station B: after the local relay is ready, also brings up the A-station UI
+rem             via SSH (tools\start_a_ui.bat, task ATEQ_A_UI on station A).
 cd /d D:\ATEQ
 for /f "tokens=2 delims== " %%s in ('findstr /b /c:"station" config\live.toml') do set ATEQ_STATION=%%s
 set ATEQ_STATION=%ATEQ_STATION:"=%
