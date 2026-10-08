@@ -94,13 +94,36 @@ def test_full_marking_cycle_via_ui(window):
     assert card.controller.phase is Phase.COMPLETE
     assert card.controller.record.marked is True
     card.refresh()
-    # 主表格第 0 行：打码列显示 √，末列为周期号。
+    # 主表格第 0 行：打码列显示 √，周期号列，当日序号列。
     assert card.table.item(0, 7).text() == "√"
     assert card.table.item(0, 9).text() == card.controller.record.cycle_id
+    expected_seq = datetime.now().strftime("%Y%m%d") + "A0001"
+    assert card.table.item(0, 10).text() == expected_seq
     # 查询页能看到本条记录。
     window.refresh_query()
     table = window.query_tables[window.station]
     assert table.item(0, 7).text() == "√"
+    assert table.item(0, 10).text() == expected_seq
+
+
+def test_daily_sequence_resets_per_day_and_model():
+    from datetime import timedelta
+    from app.ui_replica import StationPanel
+
+    base = datetime(2026, 10, 8, 1, 0, tzinfo=timezone.utc)
+    records = [
+        TraceRecord(StationId.A, part_no="M1", cycle_id="c1", created_at=base),
+        TraceRecord(StationId.A, part_no="M2", cycle_id="c2",
+                    created_at=base + timedelta(minutes=1)),
+        TraceRecord(StationId.A, part_no="M1", cycle_id="c3",
+                    created_at=base + timedelta(minutes=5)),
+        TraceRecord(StationId.A, part_no="M1", cycle_id="c4",
+                    created_at=base + timedelta(days=1)),
+    ]
+    mapping = StationPanel._daily_sequence_map(records)
+    assert mapping == {"c1": 1, "c2": 1, "c3": 2, "c4": 1}
+    assert StationPanel._daily_sequence_text(records[2], mapping["c3"]) == (
+        base.astimezone().strftime("%Y%m%d") + "A0002")
 
 
 def _release_calibration(window):

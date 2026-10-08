@@ -63,12 +63,12 @@ MANUAL_NAMES = (
     ("door_disable", "门_Door_Porte", "使能_Active_Activer/禁用_Deactive_Désactiver"),
     ("manual", "自动/手动_Automatic/Manual_Automatique/Manual", ""),
 )
-TABLE_HEADERS = ["Time / Heure", "Part No. / N° pièce", "#1 Pressure / Pression", "#1 Leakage / Fuite", "#2 Pressure / Pression", "#2 Leakage / Fuite", "Result / Résultat", "Marked / 打码", "Staff / Personnel", "Cycle ID"]
+TABLE_HEADERS = ["Time / Heure", "Part No. / N° pièce", "#1 Pressure / Pression", "#1 Leakage / Fuite", "#2 Pressure / Pression", "#2 Leakage / Fuite", "Result / Résultat", "Marked / 打码", "Staff / Personnel", "Cycle ID", "Daily Seq / 当日序号"]
 DISPLAY_HEADERS = {
-    "base": ["Time\n时间", "Part\nNo.", "#1\nPress.", "#1\nLeak.", "#2\nPress.", "#2\nLeak.", "Result\nOK·NG", "Marked\n打码", "Staff\n人员", "Cycle\nID"],
-    "中文": ["时间", "产品型号", "一测压力", "一测泄漏", "二测压力", "二测泄漏", "结果", "打码", "人员", "周期号"],
-    "English": ["Time", "Part\nNo.", "#1\nPress.", "#1\nLeak.", "#2\nPress.", "#2\nLeak.", "Result", "Marked", "Staff", "Cycle\nID"],
-    "Français": ["Heure", "N°\npièce", "Press.\n#1", "Fuite\n#1", "Press.\n#2", "Fuite\n#2", "Résultat", "Marqué", "Pers.", "Cycle"],
+    "base": ["Time\n时间", "Part\nNo.", "#1\nPress.", "#1\nLeak.", "#2\nPress.", "#2\nLeak.", "Result\nOK·NG", "Marked\n打码", "Staff\n人员", "Cycle\nID", "当日序号\nSeq"],
+    "中文": ["时间", "产品型号", "一测压力", "一测泄漏", "二测压力", "二测泄漏", "结果", "打码", "人员", "周期号", "当日序号"],
+    "English": ["Time", "Part\nNo.", "#1\nPress.", "#1\nLeak.", "#2\nPress.", "#2\nLeak.", "Result", "Marked", "Staff", "Cycle\nID", "Daily Seq"],
+    "Français": ["Heure", "N°\npièce", "Press.\n#1", "Fuite\n#1", "Press.\n#2", "Fuite\n#2", "Résultat", "Marqué", "Pers.", "Cycle", "Séq. jour"],
 }
 INDICATOR_DISPLAY_LABELS = {
     "base": ["Cal. Time", "Start Validation", "NG Sample 1", "OK Sample 2"],
@@ -383,6 +383,28 @@ class StationPanel(QFrame):
                       f"{type(exc).__name__}: {exc}")
 
     @staticmethod
+    def _daily_sequence_map(rows):
+        """按（本地日期, 产品型号）给记录编"当日序号"（每天每型号从 1 起）。
+
+        序号由记录本身推导（按 created_at 升序），因此重启 UI、跨天、
+        换型号都天然正确，且不需要数据库结构变更。超出 9999 按 9999 截断。
+        """
+        counters: dict[tuple[str, str], int] = {}
+        mapping: dict[str, int] = {}
+        for record in sorted(rows, key=lambda item: item.created_at):
+            key = (record.created_at.astimezone().strftime("%Y%m%d"), record.part_no)
+            counters[key] = counters.get(key, 0) + 1
+            mapping[record.cycle_id] = counters[key]
+        return mapping
+
+    @staticmethod
+    def _daily_sequence_text(record, sequence: int | None) -> str:
+        if not sequence:
+            return ""
+        date_code = record.created_at.astimezone().strftime("%Y%m%d")
+        return f"{date_code}{record.station.value}{min(int(sequence), 9999):04d}"
+
+    @staticmethod
     def _configure_table(table):
         header = table.horizontalHeader()
         # 列宽随内容自适应，配合像素级横向滚动：时间/二维码等字段完整显示，
@@ -420,7 +442,7 @@ class StationPanel(QFrame):
 
     @staticmethod
     def _table(name):
-        table = QTableWidget(30, 10); table.setObjectName(name); table.setHorizontalHeaderLabels(DISPLAY_HEADERS["base"]); table.setAlternatingRowColors(True); table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed); table.verticalHeader().setDefaultSectionSize(METRICS.table_row_height); table.verticalHeader().setMinimumSectionSize(METRICS.table_row_height); StationPanel._configure_table(table); [table.setRowHeight(i, METRICS.table_row_height) for i in range(30)]; table.setMinimumHeight(340); return table
+        table = QTableWidget(30, 11); table.setObjectName(name); table.setHorizontalHeaderLabels(DISPLAY_HEADERS["base"]); table.setAlternatingRowColors(True); table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed); table.verticalHeader().setDefaultSectionSize(METRICS.table_row_height); table.verticalHeader().setMinimumSectionSize(METRICS.table_row_height); StationPanel._configure_table(table); [table.setRowHeight(i, METRICS.table_row_height) for i in range(30)]; table.setMinimumHeight(340); return table
 
     def _point_read(self, signal):
         byte, bit = self.point_map.address(signal); return self.plc.read_bit(byte, bit)
@@ -793,10 +815,11 @@ class StationPanel(QFrame):
 
     def refresh(self):
         c = self.controller; rows = self._records(); self.total_today.setValue(len(rows)); self.ok_today.setValue(sum(1 for r in rows if r.second and r.second.result is Result.OK))
+        sequences = self._daily_sequence_map(rows)
         for row in range(30):
-            values = ["", "", "", "", "", "", "", "", "", ""]
+            values = ["", "", "", "", "", "", "", "", "", "", ""]
             if row < len(rows):
-                record = rows[row]; values = [record.created_at.astimezone().strftime("%Y-%m-%d-%H:%M:%S"), record.part_no, self._m(record.first, "pressure"), self._m(record.first, "leakage"), self._m(record.second, "pressure"), self._m(record.second, "leakage"), (record.second or record.first).result.value if (record.second or record.first) else "", "√" if record.marked else "", record.person, record.cycle_id]
+                record = rows[row]; values = [record.created_at.astimezone().strftime("%Y-%m-%d-%H:%M:%S"), record.part_no, self._m(record.first, "pressure"), self._m(record.first, "leakage"), self._m(record.second, "pressure"), self._m(record.second, "leakage"), (record.second or record.first).result.value if (record.second or record.first) else "", "√" if record.marked else "", record.person, record.cycle_id, self._daily_sequence_text(record, sequences.get(record.cycle_id))]
             for col, value in enumerate(values): self.table.setItem(row, col, QTableWidgetItem(str(value)))
         calibration = self._calibration()
         if calibration is not None:
@@ -1779,7 +1802,7 @@ class MainWindow(QMainWindow):
         download = QPushButton(f"Download {s.value}"); download.setObjectName(f"query_download_{s.value}"); download.clicked.connect(lambda _=False, station=s: self.download_query(station))
         actions = QHBoxLayout(); actions.setSpacing(8); actions.addWidget(search, 1); actions.addWidget(download, 1); grid.addLayout(actions, 4, 0, 1, 2); filters.addWidget(group)
         root.addLayout(filters)
-        table = QTableWidget(30,10); table.setObjectName(f"query_table_{s.value}"); table.setHorizontalHeaderLabels(DISPLAY_HEADERS["base"]); table.setAlternatingRowColors(True); table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed); table.verticalHeader().setDefaultSectionSize(METRICS.table_row_height); StationPanel._configure_table(table); [table.setRowHeight(i, METRICS.table_row_height) for i in range(30)]; self.query_tables = {s: table}
+        table = QTableWidget(30,11); table.setObjectName(f"query_table_{s.value}"); table.setHorizontalHeaderLabels(DISPLAY_HEADERS["base"]); table.setAlternatingRowColors(True); table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed); table.verticalHeader().setDefaultSectionSize(METRICS.table_row_height); StationPanel._configure_table(table); [table.setRowHeight(i, METRICS.table_row_height) for i in range(30)]; self.query_tables = {s: table}
         root.addWidget(table,1); self.tabs.addTab(page, "查询/Query/Requête")
 
     def _build_manual(self):
@@ -2200,10 +2223,12 @@ class MainWindow(QMainWindow):
     def refresh_query(self):
         for station, table in self.query_tables.items():
             rows = self._query_records(station); table.setRowCount(30)
+            sequences = StationPanel._daily_sequence_map(
+                [r for r in self.repository.records.values() if r.station is station])
             for i in range(30):
-                vals = ["", "", "", "", "", "", "", "", "", ""]
+                vals = ["", "", "", "", "", "", "", "", "", "", ""]
                 if i < len(rows):
-                    r=rows[i]; vals=[r.created_at.astimezone().strftime("%Y-%m-%d-%H:%M:%S"),r.part_no,StationPanel._m(self,r.first,"pressure") if r.first else "",StationPanel._m(self,r.first,"leakage") if r.first else "",StationPanel._m(self,r.second,"pressure") if r.second else "",StationPanel._m(self,r.second,"leakage") if r.second else "",(r.second or r.first).result.value if (r.second or r.first) else "","√" if r.marked else "",r.person,r.cycle_id]
+                    r=rows[i]; vals=[r.created_at.astimezone().strftime("%Y-%m-%d-%H:%M:%S"),r.part_no,StationPanel._m(self,r.first,"pressure") if r.first else "",StationPanel._m(self,r.first,"leakage") if r.first else "",StationPanel._m(self,r.second,"pressure") if r.second else "",StationPanel._m(self,r.second,"leakage") if r.second else "",(r.second or r.first).result.value if (r.second or r.first) else "","√" if r.marked else "",r.person,r.cycle_id,StationPanel._daily_sequence_text(r, sequences.get(r.cycle_id))]
                 for col,val in enumerate(vals): table.setItem(i,col,QTableWidgetItem(str(val)))
     def download_query(self, station, path=None):
         if path is None:
