@@ -536,10 +536,13 @@ class StationPanel(QFrame):
                       f"{type(exc).__name__}: {exc}")
             return
         if normal:
+            if trace is not None:
+                trace(f"PRESSURE_SWITCH_OK station={self.station.value} step5 "
+                      f"M{byte}.{bit}=1 继续测试")
             return
         trip_byte, trip_bit = self.point_map.address("pressure_trip")
         if trace is not None:
-            trace(f"PRESSURE_SWITCH_ABNORMAL station={self.station.value} "
+            trace(f"PRESSURE_SWITCH_ABNORMAL station={self.station.value} step5 "
                   f"M{byte}.{bit}=0 → M{trip_byte}.{trip_bit} 置 1 保持 "
                   f"{self._pressure_trip_seconds:g} 秒并终止测试")
         try:

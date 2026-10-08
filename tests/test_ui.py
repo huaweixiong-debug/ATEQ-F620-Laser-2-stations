@@ -434,6 +434,8 @@ def test_positive_hold_guard_trips_and_terminates(window, tmp_path):
         card._positive_hold_guard()
     assert spy.writes == [(110, 5, True), (110, 5, False)]   # M885 脉冲 2 秒
     assert spy.read_bit(110, 5) is False
+    trace_text = (tmp_path / "live_trace.log").read_text(encoding="utf-8")
+    assert "PRESSURE_SWITCH_ABNORMAL" in trace_text
 
 
 def test_positive_hold_guard_normal_keeps_running(window, tmp_path):
@@ -444,6 +446,8 @@ def test_positive_hold_guard_normal_keeps_running(window, tmp_path):
     spy.bits[(110, 6)] = True             # 压力开关=1 → 正常
     card._positive_hold_guard()           # 不抛异常
     assert spy.writes == []
+    trace_text = (tmp_path / "live_trace.log").read_text(encoding="utf-8")
+    assert "PRESSURE_SWITCH_OK" in trace_text
 
 
 def test_positive_hold_guard_only_during_second_test(window, tmp_path):
