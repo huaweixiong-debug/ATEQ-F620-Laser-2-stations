@@ -54,3 +54,11 @@ def test_step5_check_not_called_without_step5():
     response = ateq.run(_request())
     assert calls == []
     assert response.measurement.result is Result.OK
+
+
+def test_stepcode_callback_receives_every_change():
+    ateq = _StubAteq([4, 5, 5, 6, 65535])
+    seen = []
+    ateq.stepcode_callback = seen.append
+    ateq.run(_request())
+    assert seen == [4, 5, 6, 65535]

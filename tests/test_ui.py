@@ -565,6 +565,9 @@ def test_pressure_alarm_poll_updates_label(window):
     window.point_map = points
     assert window.pressure_alarm_timer.interval() == 2000
     assert card.pressure_alarm_label.isHidden() is True
+    # 报警仅在正压 StepCode=5 期间生效
+    window._last_live_stepcode = 5
+    card.controller.phase = Phase.TEST_2
     window.plc.write_bit(110, 6, False)   # 开关=0 → 异常 → 显示报警
     window._poll_pressure_alarm()
     assert card.pressure_alarm_label.isHidden() is False
@@ -574,6 +577,26 @@ def test_pressure_alarm_poll_updates_label(window):
     window._poll_pressure_alarm()
     assert card.pressure_alarm_label.isHidden() is True
     assert card.indicators["pressure"].property("state") == "ok"
+
+
+def test_pressure_alarm_hidden_outside_step5(window):
+    import dataclasses as dc
+
+    card = window.cards[0]
+    points = dc.replace(card.point_map, addresses={
+        **card.point_map.addresses, "pressure_alarm": (110, 6)})
+    card.point_map = points
+    window.point_map = points
+    card.controller.phase = Phase.TEST_2
+    window.plc.write_bit(110, 6, False)   # 开关异常但不在 step5 → 不显示
+    window._last_live_stepcode = 4
+    window._poll_pressure_alarm()
+    assert card.pressure_alarm_label.isHidden() is True
+    window._last_live_stepcode = 5        # 进入 step5 → 显示
+    window._poll_pressure_alarm()
+    assert card.pressure_alarm_label.isHidden() is False
+    card._apply_stepcode_display("6")     # 离开 step5 → 立即熄灭
+    assert card.pressure_alarm_label.isHidden() is True
 
 
 def test_journal_dir_uses_env_override(window, tmp_path):

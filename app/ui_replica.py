@@ -163,7 +163,10 @@ class StationPanel(QFrame):
             safe_stop=plc, license_status=security.license_status, security=security)
         self.stepcode_updated.connect(self._apply_stepcode_display)
         if hasattr(self.controller.ateq, "stepcode_callback"):
-            self.controller.ateq.stepcode_callback = self.stepcode_updated.emit
+            # 显示端信号为 str；适配器回调传整数，这里显式转换——否则 emit
+            # 类型异常会被监视循环的兜底 except 吞掉，测试期间步骤码不刷新。
+            self.controller.ateq.stepcode_callback = (
+                lambda code: self.stepcode_updated.emit(str(code)))
         if hasattr(self.controller.ateq, "step5_check"):
             self.controller.ateq.step5_check = self._positive_hold_guard
         self._pressure_trip_seconds = 2.0
@@ -898,6 +901,9 @@ class StationPanel(QFrame):
         self.stepcode_value.setProperty("state", state)
         self.stepcode_value.style().unpolish(self.stepcode_value)
         self.stepcode_value.style().polish(self.stepcode_value)
+        # 压力开关报警只在正压 StepCode=5 期间有效，其余步骤立即熄灭。
+        if value != "5":
+            self.set_pressure_alarm(False)
 
     def refresh(self):
         c = self.controller; rows = self._records(); self.total_today.setValue(len(rows)); self.ok_today.setValue(sum(1 for r in rows if r.second and r.second.result is Result.OK))
@@ -1244,7 +1250,7 @@ class MainWindow(QMainWindow):
         return answer == QMessageBox.StandardButton.Yes
 
     def _poll_pressure_alarm(self):
-        """PLC->PC 压力开关状态：2 秒只读轮询（0=异常 → 显示报警）。"""
+        """PLC->PC 压力开关状态：2 秒只读轮询（仅正压 StepCode=5 期间显示报警）。"""
         card = self.cards[0]
         if not card.point_map.has("pressure_alarm"):
             return
@@ -1254,7 +1260,10 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._live_trace(f"PRESSURE_ALARM_READ_FAILED {type(exc).__name__}: {exc}")
             return
-        card.set_pressure_alarm(not normal)
+        in_positive_hold = (
+            getattr(self, "_last_live_stepcode", None) == 5
+            and card.controller.phase is Phase.TEST_2)
+        card.set_pressure_alarm(in_positive_hold and not normal)
 
     def _ateq_heartbeat(self):
         """Keep the F620 Modbus session alive with a read-only status poll."""
