@@ -164,6 +164,10 @@ class StationPanel(QFrame):
         self.stepcode_updated.connect(self._apply_stepcode_display)
         if hasattr(self.controller.ateq, "stepcode_callback"):
             self.controller.ateq.stepcode_callback = self.stepcode_updated.emit
+        if hasattr(self.controller.ateq, "abort_check"):
+            self.controller.ateq.abort_check = self._positive_hold_guard
+        self._pressure_trip_seconds = 2.0
+        self._last_hold_check = 0.0
         self.setObjectName(f"stationCard_{station.value}")
         self.setFrameShape(QFrame.Shape.Box)
         outer = QVBoxLayout(self); outer.setContentsMargins(14, 0, 14, 4); outer.setSpacing(0)
@@ -508,6 +512,51 @@ class StationPanel(QFrame):
 
     def _calibration(self):
         return self.calibration_provider(self.station) if self.calibration_provider else None
+
+    def _positive_hold_guard(self) -> None:
+        """正压保压守护：二次测试期间每 2 秒读压力开关，0=异常 → 终止并脉冲。
+
+        现场约定：A 工位保压正常信号 = M886、异常终止输出 = M885；B 工位
+        正常信号 = M887、异常终止输出 = M884。异常时把终止输出置 1 保持
+        2 秒再复位，然后抛出异常中止本次监视（走既有故障/恢复路径）。
+        仅 LIVE 生效；读失败不误报。
+        """
+        if not getattr(self.window(), "live_mode", False):
+            return
+        if self.controller.phase is not Phase.TEST_2:
+            return
+        if not (self.point_map.has("pressure_alarm") and self.point_map.has("pressure_trip")):
+            return
+        now = time.monotonic()
+        if now - self._last_hold_check < 2.0:
+            return
+        self._last_hold_check = now
+        trace = getattr(self.window(), "_live_trace", None)
+        byte, bit = self.point_map.address("pressure_alarm")
+        try:
+            normal = bool(self.plc.read_bit(byte, bit))
+        except Exception as exc:
+            if trace is not None:
+                trace(f"PRESSURE_SWITCH_READ_FAILED station={self.station.value} "
+                      f"{type(exc).__name__}: {exc}")
+            return
+        if normal:
+            return
+        trip_byte, trip_bit = self.point_map.address("pressure_trip")
+        if trace is not None:
+            trace(f"PRESSURE_SWITCH_ABNORMAL station={self.station.value} "
+                  f"M{byte}.{bit}=0 → M{trip_byte}.{trip_bit} 置 1 保持 "
+                  f"{self._pressure_trip_seconds:g} 秒并终止测试")
+        try:
+            self.plc.write_bit(trip_byte, trip_bit, True)
+            time.sleep(self._pressure_trip_seconds)
+            self.plc.write_bit(trip_byte, trip_bit, False)
+        except Exception as exc:
+            if trace is not None:
+                trace(f"PRESSURE_TRIP_WRITE_FAILED station={self.station.value} "
+                      f"{type(exc).__name__}: {exc}")
+        raise RuntimeError(
+            f"正压保压阶段压力开关异常（M{byte}.{bit}=0），终止测试")
 
     def set_pressure_alarm(self, active: bool) -> None:
         """PLC->PC 压力开关报警显示（只读轮询，不参与联锁）。"""

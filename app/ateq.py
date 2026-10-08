@@ -102,6 +102,7 @@ class SerialAteq:
         self._lock = RLock()
         self._last_fifo: int | None = None
         self.stepcode_callback = None
+        self.abort_check = None
         self._last_reported_stepcode: int | None = None
 
     def connect(self) -> None:
@@ -396,6 +397,9 @@ class SerialAteq:
         t0 = time.monotonic()
         while time.monotonic() < deadline:
             registers, raw = self.read_registers(self.REALTIME_ADDRESS, self.REALTIME_COUNT)
+            if self.abort_check is not None:
+                # 正压保压守护等外部中止钩子：抛异常即中止本次监视（fail-closed）。
+                self.abort_check()
             last_frame = raw
             step_code = self._swap16(registers[4])
             if step_code != self._last_reported_stepcode:

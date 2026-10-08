@@ -394,6 +394,79 @@ def test_live_default_calibration_sample_still_starts(window, tmp_path, monkeypa
     assert isinstance(card.controller.ateq, FakeAteq)
 
 
+class _PlcSpy:
+    def __init__(self):
+        self.bits = {}
+        self.writes = []
+
+    def read_bit(self, byte, bit):
+        return bool(self.bits.get((byte, bit), False))
+
+    def write_bit(self, byte, bit, value):
+        self.writes.append((byte, bit, bool(value)))
+        self.bits[(byte, bit)] = bool(value)
+
+
+def _guard_window(window):
+    import dataclasses as dc
+
+    card = window.cards[0]
+    points = dc.replace(card.point_map, addresses={
+        **card.point_map.addresses,
+        "pressure_alarm": (110, 6),
+        "pressure_trip": (110, 5),
+    })
+    card.point_map = points
+    window.point_map = points
+    window.live_mode = True
+    card._pressure_trip_seconds = 0.0
+    card._last_hold_check = 0.0
+    return card
+
+
+def test_positive_hold_guard_trips_and_terminates(window):
+    card = _guard_window(window)
+    spy = _PlcSpy()
+    card.plc = spy
+    card.controller.phase = Phase.TEST_2
+    spy.bits[(110, 6)] = False            # 压力开关=0 → 异常
+    with pytest.raises(RuntimeError, match="压力开关异常"):
+        card._positive_hold_guard()
+    assert spy.writes == [(110, 5, True), (110, 5, False)]   # M885 脉冲 2 秒
+    assert spy.read_bit(110, 5) is False
+
+
+def test_positive_hold_guard_normal_keeps_running(window):
+    card = _guard_window(window)
+    spy = _PlcSpy()
+    card.plc = spy
+    card.controller.phase = Phase.TEST_2
+    spy.bits[(110, 6)] = True             # 压力开关=1 → 正常
+    card._positive_hold_guard()           # 不抛异常
+    assert spy.writes == []
+
+
+def test_positive_hold_guard_only_during_second_test(window):
+    card = _guard_window(window)
+    spy = _PlcSpy()
+    card.plc = spy
+    card.controller.phase = Phase.TEST_1
+    spy.bits[(110, 6)] = False
+    card._positive_hold_guard()
+    assert spy.writes == []
+
+
+def test_positive_hold_guard_throttles_two_seconds(window):
+    card = _guard_window(window)
+    spy = _PlcSpy()
+    card.plc = spy
+    card.controller.phase = Phase.TEST_2
+    spy.bits[(110, 6)] = False
+    card._last_hold_check = time.monotonic()      # 刚查过 → 本次跳过
+    card._positive_hold_guard()
+    assert spy.writes == []
+
+
 class _ReconnectStub:
     def __init__(self):
         self.connect_calls = 0

@@ -35,7 +35,8 @@ REQUIRED_SIGNALS = (
 )
 OPTIONAL_SIGNALS = (
     "laser_done",     # 激光打码完成位（可选反馈）
-    "pressure_alarm", # 压力开关报警（PLC->PC，可选，2 秒周期只读）
+    "pressure_alarm", # 压力开关正常信号（PLC->PC，1=正常/0=异常）
+    "pressure_trip",  # 压力开关异常终止输出（PC->PLC，置 1 保持 2 秒）
 )
 
 # FX 档（240429 箱体气密封机，三菱 FX）：点位沿用老机 OPC 标签契约。
@@ -55,7 +56,8 @@ OPTIONAL_SIGNALS_FX = (
     "sample",         # 样件模式（老 M467 → M58.3）
     "isolation_init", # 隔离箱初始化（老 M466 → M58.2）
     "shield_cylinder",# 本工位屏蔽气缸（A=M111.3 即 M891 / B=M111.2 即 M890）
-    "pressure_alarm", # 压力开关报警（PLC->PC：A=M110.6 即 M886 / B=M110.7 即 M887）
+    "pressure_alarm", # 压力开关正常信号（PLC->PC：A=M110.6 即 M886 / B=M110.7 即 M887）
+    "pressure_trip",  # 异常终止输出（PC->PLC：A=M110.5 即 M885 / B=M110.4 即 M884）
 )
 
 _ADDRESS_RE = re.compile(r"^M([0-9]|[1-9][0-9]?[0-9]?)\.([0-7])$")
@@ -80,6 +82,7 @@ SIM_POINTS = {
     "laser_start": "M20.0",
     "laser_done": "M20.1",
     "pressure_alarm": "M20.2",
+    "pressure_trip": "M20.3",
 }
 
 
