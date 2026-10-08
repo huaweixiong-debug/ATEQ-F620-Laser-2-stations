@@ -694,6 +694,29 @@ class StationPanel(QFrame):
         except Exception: self._error_key = "remark_denied"
         self.refresh(); self.changed_callback()
 
+    def reconnect_plc(self) -> None:
+        """人工恢复动作后尽力重连 PLC 并恢复写权限。
+
+        安全停止会断开适配器并关闭写门禁（fail-closed）；若不重连，站点在
+        重启 UI 前无法继续工作。仅在操作员/管理员显式恢复动作后调用。
+        """
+        connect = getattr(self.plc, "connect", None)
+        enable = getattr(self.plc, "enable_writes", None)
+        try:
+            if connect is not None:
+                connect()
+            if enable is not None:
+                enable(True)
+        except Exception as exc:
+            trace = getattr(self.window(), "_live_trace", None)
+            if trace is not None:
+                trace(f"PLC_RECONNECT_FAILED station={self.station.value} "
+                      f"{type(exc).__name__}: {exc}")
+            return
+        trace = getattr(self.window(), "_live_trace", None)
+        if trace is not None:
+            trace(f"PLC_RECONNECTED station={self.station.value}")
+
     def reset(self):
         try:
             if self.controller.recovery_required:
@@ -704,6 +727,7 @@ class StationPanel(QFrame):
                     f"UI reset {self.station.value}", require_permission=False)
             else:
                 self.controller.reset()
+            self.reconnect_plc()
             # Keep the simulation lifecycle marker, but do not disconnect a
             # live PLC on an operator reset.
             if isinstance(self.plc, FakePlc):
@@ -2305,7 +2329,7 @@ class MainWindow(QMainWindow):
             self.calibration_status.setText({"中文": "校准错误：样件顺序无效", "English": "Calibration error: invalid sample order", "Français": "Erreur de calibration : ordre d'échantillon invalide"}[self._language])
     def resolve_recovery(self, station, reason="UI 人工确认"):
         try:
-            self.security.require("recovery_resolve"); card=self._card_for_station(station); card.controller.resolve_recovery(reason); card.refresh(); self.recovery_status.setText({"中文": f"工位 {station.value} 已审计归档", "English": f"Station {station.value} archived", "Français": f"Poste {station.value} archivé"}[self._language])
+            self.security.require("recovery_resolve"); card=self._card_for_station(station); card.controller.resolve_recovery(reason); card.reconnect_plc(); card.refresh(); self.recovery_status.setText({"中文": f"工位 {station.value} 已审计归档", "English": f"Station {station.value} archived", "Français": f"Poste {station.value} archivé"}[self._language])
         except Exception: self.recovery_status.setText({"中文": "恢复拒绝：权限不足", "English": "Recovery denied: permission required", "Français": "Récupération refusée : autorisation requise"}[self._language])
 
 

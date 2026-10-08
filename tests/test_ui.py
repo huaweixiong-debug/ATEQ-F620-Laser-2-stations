@@ -348,6 +348,45 @@ def test_live_default_calibration_sample_still_starts(window, tmp_path, monkeypa
     assert isinstance(card.controller.ateq, FakeAteq)
 
 
+class _ReconnectStub:
+    def __init__(self):
+        self.connect_calls = 0
+        self.writes = False
+
+    def connect(self):
+        self.connect_calls += 1
+
+    def enable_writes(self, approved):
+        self.writes = bool(approved)
+
+
+def test_reconnect_plc_after_recovery(window):
+    card = window.cards[0]
+    stub = _ReconnectStub()
+    original = card.plc
+    card.plc = stub
+    try:
+        card.reconnect_plc()
+    finally:
+        card.plc = original
+    assert stub.connect_calls == 1
+    assert stub.writes is True
+
+
+def test_reconnect_plc_failure_is_traced_not_raised(window):
+    class _Boom:
+        def connect(self):
+            raise RuntimeError("no link")
+
+    card = window.cards[0]
+    original = card.plc
+    card.plc = _Boom()
+    try:
+        card.reconnect_plc()   # 重连失败不得抛出
+    finally:
+        card.plc = original
+
+
 def test_live_clear_laser_start_bit(window):
     window.plc.write_bit(20, 0, True)      # 模拟点位表 laser_start = M20.0
     window._clear_laser_start_bit()
