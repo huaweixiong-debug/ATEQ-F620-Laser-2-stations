@@ -15,6 +15,14 @@ COLUMNS = ("Time", "Part No.", "Person",
 _TABLES = ("info_A", "info_B")
 
 
+def _sql_table(name: str) -> str:
+    """表名白名单校验：表名无法参数化、只能插值进 SQL，所有汇点插值前
+    必须先过此白名单（深度审计 finding finding:5626cf… 的加固）。"""
+    if name not in _TABLES:
+        raise RuntimeError(f"LIVE_BLOCKED: 非法表名 {name!r} 不在白名单 {_TABLES}")
+    return name
+
+
 class FakeRepository:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -115,7 +123,7 @@ class PyMySQLRepository:
             with connection.cursor() as cursor:
                 results = {}
                 for table in _TABLES:
-                    cursor.execute(f"SHOW CREATE TABLE `{table}`")
+                    cursor.execute(f"SHOW CREATE TABLE `{_sql_table(table)}`")
                     row = cursor.fetchone()
                     results[table] = row[1]
         self.verify_schema(results)
@@ -166,7 +174,7 @@ class PyMySQLRepository:
         updates = ", ".join(
             f"`{name}`=VALUES(`{name}`)" for name in COLUMNS
             if name not in ("marked", "Mark Time", "cycle_id"))
-        sql = f"""INSERT INTO `{table}` ({columns})
+        sql = f"""INSERT INTO `{_sql_table(table)}` ({columns})
             VALUES ({placeholders})
             ON DUPLICATE KEY UPDATE {updates},
               `marked`=GREATEST(`marked`,VALUES(`marked`)),id=LAST_INSERT_ID(id)"""
@@ -222,7 +230,7 @@ class PyMySQLRepository:
                 try:
                     with connection.cursor() as cursor:
                         for table in tables:
-                            cursor.execute(f"UPDATE `{table}` SET `marked`=1, `Mark Time`=%s WHERE `cycle_id`=%s",
+                            cursor.execute(f"UPDATE `{_sql_table(table)}` SET `marked`=1, `Mark Time`=%s WHERE `cycle_id`=%s",
                                            (datetime.now().replace(microsecond=0), cycle_id))
                             affected += cursor.rowcount
                     if affected != 1:
@@ -267,7 +275,7 @@ class PyMySQLRepository:
     @staticmethod
     def _select_sql(table: str, where: str = "") -> str:
         columns = ", ".join(f"`{name}`" for name in COLUMNS)
-        return f"SELECT {columns} FROM `{table}`{where}"
+        return f"SELECT {columns} FROM `{_sql_table(table)}`{where}"
 
     @staticmethod
     def _row_to_record(table: str, values: tuple) -> TraceRecord:
