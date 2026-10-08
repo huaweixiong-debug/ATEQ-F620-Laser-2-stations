@@ -281,9 +281,11 @@ class StationController:
     def _validate_mark_readback(self, readback: TraceRecord) -> TraceRecord:
         """Fail-closed validation of the committed row used as marker input.
 
-        All checks run before ``marker.mark``; the only value not sourced from
-        the readback is the ``date_scheme`` formatting overlay.  Pass/fail is
-        decided by the readback ``Result`` columns, never by in-memory data.
+        All checks run before ``marker.mark``; the only values not sourced from
+        the readback are the ``date_scheme`` formatting overlay and the
+        display-only ``daily_sequence`` overlay (数据库无此列，由界面在打码
+        前写入 self.record，此处覆盖到回读对象).  Pass/fail is decided by the
+        readback ``Result`` columns, never by in-memory data.
         """
         if not isinstance(readback, TraceRecord):
             raise ValueError("打码回读类型无效")
@@ -302,6 +304,9 @@ class StationController:
         if not isinstance(scheme, str) or not scheme.strip():
             raise ValueError("打码日期方案无效")
         readback.date_scheme = scheme.strip()
+        # 当日序号仅存在于内存记录（数据库无此列）；不覆盖到回读对象的
+        # 话，打码文本永远取回读对象的空默认值，第五行序号会静默丢失。
+        readback.daily_sequence = (getattr(self.record, "daily_sequence", "") or "").strip()
         require_second = self.record.test_mode != "single"
         self._validate_mark_measurement(readback.first, "first")
         if readback.second is None:
