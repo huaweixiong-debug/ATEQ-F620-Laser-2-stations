@@ -1,121 +1,130 @@
-"""FX 编程口（计算机链接 Format 1）协议帧构造/解析测试。
+"""FX 编程口协议测试（2026-10-08 FX3GA-40MT 真机实测修正后的帧）。
 
-协议要点（FX-232AW / FX 计算机链接格式1）：
-- 帧以 STX(0x02) 开始、ETX(0x03) 结束，和校验 = STX..ETX 全部字节之和的
-  补码低 8 位，两位大写十六进制 ASCII。
-- 位批量读 BR：STX 'BR' 起始元件(6位16进制) 点数(2位16进制) ETX 和
-- 位批量写 BW：STX 'BW' 起始元件 点数 数据('0'/'1'*点数) ETX 和，应答 ACK(0x06)
-- 字批量读 WR：STX 'WR' 起始元件 字数 数据(4位16进制/字) ETX 和
-- 字批量写 WW：同 WR 结构带数据，应答 ACK
-- M/D 元件地址 = 十进制元件号的十六进制表示（M890 -> "00037A"）
-- 出错应答 NAK(0x15) + 2 位错误码
+实测环境：B 站 COM3，9600 7E1。
+- 读命令 '0'：STX '0' 地址(4HEX) 字节数(2HEX) ETX LRC
+- 应答：STX 数据(2HEX/字节) ETX LRC
+- LRC = 命令..ETX 的和低 8 位（不含 STX）
+- 强制 '7'/'8'；地址按字节交换输出
 """
 import pytest
 
 from app.fx_protocol import (STX, ETX, ACK, NAK, ENQ,
-                             checksum, build_batch_read_bits, build_batch_write_bits,
-                             build_batch_read_words, build_batch_write_words,
+                             lrc, bit_byte_address, word_byte_address,
+                             force_address, swap_bytes_hex, swap_hex_bytes,
+                             words_hex, build_read_request, build_read_bits_request,
+                             build_read_words_request, build_write_words_request,
+                             build_force_request, parse_read_response, extract_bits,
                              parse_read_bits_response, parse_read_words_response,
-                             parse_write_ack, device_address_hex, FxProtocolError)
+                             parse_ack, FxProtocolError)
 
 
-def test_checksum_twos_complement():
-    frame = b"\x02BR00000001\x03"
-    total = sum(frame) + int(checksum(frame), 16)
-    assert total % 256 == 0
-    assert checksum(frame) == "E6"
+def test_lrc_plain_sum_excludes_stx():
+    # 真机 M0..M7 请求捕获：02 30 30 31 30 30 30 31 03 35 35
+    body = b"0" + b"0100" + b"01" + bytes([ETX])
+    assert lrc(body) == "55"
+    assert lrc(b"0" + b"0100" + b"01" + bytes([ETX])) == "55"
 
 
-def test_checksum_known_vector():
-    # 手工验算：0x02+0x42+0x52+0x30*4+0x03 = 0x159，补码低 8 位 = 0x100-0x59 = 0xA7。
-    assert checksum(b"\x02\x42\x52\x30\x30\x30\x30\x03") == "A7"
+def test_read_request_m0_real_capture():
+    # 与真机捕获完全一致：0230303130303031033535
+    assert build_read_bits_request(0, 8) == bytes.fromhex("0230303130303031033535")
 
 
-def test_device_address_hex():
-    assert device_address_hex(0) == "000000"
-    assert device_address_hex(890) == "00037A"
-    assert device_address_hex(900) == "000384"
+def test_bit_and_word_byte_address():
+    assert bit_byte_address(0) == 0x0100
+    assert bit_byte_address(7) == 0x0100
+    assert bit_byte_address(8) == 0x0101
+    assert bit_byte_address(890) == 0x016F
+    assert bit_byte_address(891) == 0x016F
+    assert word_byte_address(0) == 0x1000
+    assert word_byte_address(900) == 0x1708  # 0x1000 + 900*2
     with pytest.raises(ValueError):
-        device_address_hex(-1)
+        bit_byte_address(-1)
     with pytest.raises(ValueError):
-        device_address_hex(0x1000000)
+        word_byte_address(0x2000)
 
 
-def test_build_batch_read_bits_structure():
-    frame = build_batch_read_bits(0, 1)
-    assert frame.startswith(bytes([STX]) + b"BR")
-    assert b"000000" in frame          # 起始元件 M0
-    assert frame.endswith(b"01" + bytes([ETX]) + checksum(frame[:-2]).encode())
-    assert len(frame) == 1 + 2 + 6 + 2 + 1 + 2
+def test_force_address_table_and_swap():
+    assert force_address(0) == 0x0800
+    assert force_address(3) == 0x0803
+    assert force_address(890) == 0x0B7A
+    assert force_address(1023) == 0x0BFF
+    assert force_address(8000) == 0x0F00
+    assert force_address(8013) == 0x0F0D
+    for bad in (1024, 7999, 8256, -1):
+        with pytest.raises(ValueError):
+            force_address(bad)
+    assert swap_bytes_hex(0x0800) == "0008"
+    assert swap_bytes_hex(0x0B7A) == "7A0B"
+    assert swap_bytes_hex(0x1708) == "0817"
+    assert swap_hex_bytes("7A0B") == 0x0B7A
+    assert swap_hex_bytes("0008") == 0x0800
 
 
-def test_build_batch_read_bits_m890():
-    frame = build_batch_read_bits(890, 2)
-    assert b"00037A" in frame
-    assert frame[9:11] == b"02"
+def test_force_frames():
+    # 强制 M0 ON：02 37 '0008' 03 02
+    assert build_force_request(0, True) == bytes.fromhex("023730303038033032")
+    # 强制 M890 ON：地址 0B7A -> 交换 7A0B
+    assert build_force_request(890, True) == bytes.fromhex("023737413042033234")
+    # 强制 M8000 OFF：地址 0F00 -> 交换 000F
+    assert build_force_request(8000, False) == bytes.fromhex("023830303046033131")
 
 
-def test_build_batch_write_bits():
-    frame = build_batch_write_bits(1, [True, False, True])
-    assert frame.startswith(bytes([STX]) + b"BW00000103")
-    assert frame[-6:-3] == b"101"
+def test_read_words_request_and_parse():
+    # D900 读 1 字：地址 1708，字节数 02
+    assert build_read_words_request(900, 1) == bytes.fromhex("0230313730383032033635")
+    # 应答数据 "D204" = 0x04D2（低字节在前）
+    raw = bytes([STX]) + b"D204" + bytes([ETX])
+    raw += lrc(raw[1:]).encode()
+    assert parse_read_words_response(raw, 1) == [0x04D2]
+
+
+def test_write_words_request():
+    frame = build_write_words_request(900, [0x04D2])
+    assert frame.startswith(bytes([STX]) + b"1" + b"1708" + b"02")
+    assert b"D204" in frame
     assert frame[-3] == ETX
-
-
-def test_build_batch_read_words():
-    frame = build_batch_read_words(900, 1)
-    assert frame.startswith(bytes([STX]) + b"WR")
-    assert frame[3:9] == b"000384"
-    assert frame[9:11] == b"01"
-    assert frame[-3] == ETX
-
-
-def test_build_batch_write_words():
-    frame = build_batch_write_words(900, [0x1234])
-    assert frame.startswith(bytes([STX]) + b"WW00038401")
-    assert b"1234" in frame
-    assert frame[-3] == ETX
-
-
-def test_write_words_rejects_out_of_range():
+    assert words_hex([0x04D2]) == "D204"
+    assert words_hex([0x1234, 0xABCD]) == "3412CDAB"
     with pytest.raises(ValueError):
-        build_batch_write_words(900, [0x10000])
+        build_write_words_request(0, [0x10000])
     with pytest.raises(ValueError):
-        build_batch_write_words(900, [-1])
-    with pytest.raises(ValueError):
-        build_batch_read_bits(0, 0)      # 点数为 0 非法
-    with pytest.raises(ValueError):
-        build_batch_read_bits(0, 0x100)  # 点数超过 2 位十六进制
+        build_write_words_request(0, [])
 
 
-def test_parse_read_bits_response():
-    frame = bytes([STX]) + b"101" + bytes([ETX])
-    frame += checksum(frame).encode()
-    assert parse_read_bits_response(frame) == [True, False, True]
-
-
-def test_parse_read_words_response():
-    payload = b"0000" + b"FFFF"
-    frame = bytes([STX]) + payload + bytes([ETX])
-    frame += checksum(frame).encode()
-    assert parse_read_words_response(frame) == [0, 0xFFFF]
-
-
-def test_parse_response_rejects_bad_checksum():
-    frame = bytearray(bytes([STX]) + b"101" + bytes([ETX]) + b"00")
+def test_read_response_validation():
+    assert parse_read_response(bytes.fromhex("023030033633"), 1) == b"\x00"
     with pytest.raises(FxProtocolError):
-        parse_read_bits_response(bytes(frame))
+        parse_read_response(bytes([NAK]), 1)
+    with pytest.raises(FxProtocolError):
+        parse_read_response(bytes.fromhex("023030033630"), 1)  # 坏校验
+    with pytest.raises(FxProtocolError):
+        parse_read_response(bytes.fromhex("0230303033"), 2)  # 长度不符
 
 
-def test_parse_write_ack():
-    assert parse_write_ack(bytes([ACK])) is True
-    nak = bytes([NAK]) + b"02"
-    with pytest.raises(FxProtocolError) as excinfo:
-        parse_write_ack(nak)
-    assert "02" in str(excinfo.value)
+def test_extract_bits_lsb_first_and_offset():
+    data = bytes([0b10101010, 0b00000011])
+    assert extract_bits(data, 0, 8) == [False, True, False, True, False, True, False, True]
+    assert extract_bits(data, 2, 3) == [False, True, False]
+    assert extract_bits(data, 6, 4) == [False, True, True, True]
+    with pytest.raises(FxProtocolError):
+        extract_bits(b"\x00", 7, 2)
 
 
-def test_enq_ping_frame():
-    # ENQ 探活：单字节 0x05，应答 ACK。
+def test_read_bits_response_real_capture():
+    # 真机 M8..M23 读应答捕获样例：数据 "00"（无位 ON）
+    assert parse_read_bits_response(bytes.fromhex("023030033633"), 0, 8) == [False] * 8
+
+
+def test_parse_ack():
+    assert parse_ack(bytes([ACK])) is True
+    with pytest.raises(FxProtocolError):
+        parse_ack(bytes([NAK]))
+    with pytest.raises(FxProtocolError):
+        parse_ack(b"")
+
+
+def test_enq_constants():
     assert ENQ == 0x05
     assert ACK == 0x06
+    assert NAK == 0x15

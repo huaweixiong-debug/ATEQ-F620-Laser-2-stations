@@ -1,9 +1,10 @@
-"""FxSerialPlc 适配器测试：用内存 FX 设备模拟器验证读/写/健康/安全停止。"""
+"""FxSerialPlc 适配器测试：用内存 FX 设备模拟器验证读/写/健康/安全停止。
+
+模拟器实现 2026-10-08 真机实测修正后的编程口协议（'0' 读 / '1' 写 / '7''8' 强制）。
+"""
 import pytest
 
-from app.fx_protocol import (STX, ETX, ACK, checksum, build_batch_read_bits,
-                             build_batch_write_bits, build_batch_read_words,
-                             build_batch_write_words)
+from app.fx_protocol import (STX, ETX, ACK, lrc, swap_bytes_hex, swap_hex_bytes)
 from app.plc import FxSerialPlc, FakeFxPlc
 
 
@@ -15,53 +16,71 @@ class FakeFxPort:
         self.words = words
         self.is_open = True
         self.written: list[bytes] = []
+        self._reply = b""
 
     def close(self):
         self.is_open = False
 
     def reset_input_buffer(self):
-        pass
+        self._reply = b""
 
     def flush(self):
         pass
 
     def write(self, data: bytes):
         self.written.append(data)
+        self._reply = self._handle(data)
         return len(data)
 
     def read(self, n: int) -> bytes:
-        request = self.written[-1]
-        if request[0] == 0x05:                      # ENQ 探活
+        chunk, self._reply = self._reply[:n], self._reply[n:]
+        return chunk
+
+    def _reply_frame(self, data_hex: str) -> bytes:
+        frame = bytes([STX]) + data_hex.encode("ascii") + bytes([ETX])
+        return frame + lrc(frame[1:]).encode("ascii")
+
+    def _handle(self, request: bytes) -> bytes:
+        if request[0] == 0x05:                       # ENQ 探活
             return bytes([ACK])
-        command = request[1:3]
-        body = request[1:-3]
-        if command == b"BR":
-            start = int(request[3:9], 16)
-            count = int(request[9:11], 16)
-            data = "".join("1" if self.bits.get(start + i, False) else "0"
-                           for i in range(count)).encode()
-            frame = bytes([STX]) + data + bytes([ETX])
-            return frame + checksum(frame).encode()
-        if command == b"BW":
-            start = int(request[3:9], 16)
-            count = int(request[9:11], 16)
-            payload = request[11:11 + count]
-            for i in range(count):
-                self.bits[start + i] = payload[i:i + 1] == b"1"
+        assert request[0] == STX, f"帧头非 STX: {request!r}"
+        command = request[1:2]
+        if command in (b"7", b"8"):                  # 强制位
+            swapped = swap_hex_bytes(request[2:6].decode("ascii"))
+            if 0x0800 <= swapped <= 0x0BFF:
+                device = swapped - 0x0800
+            elif 0x0F00 <= swapped <= 0x0FFF:
+                device = 8000 + (swapped - 0x0F00)
+            else:
+                raise AssertionError(f"强制地址超范围: {swapped:04X}")
+            self.bits[device] = command == b"7"
             return bytes([ACK])
-        if command == b"WR":
-            start = int(request[3:9], 16)
-            count = int(request[9:11], 16)
-            data = b"".join(f"{self.words.get(start + i, 0):04X}".encode()
-                            for i in range(count))
-            frame = bytes([STX]) + data + bytes([ETX])
-            return frame + checksum(frame).encode()
-        if command == b"WW":
-            start = int(request[3:9], 16)
-            count = int(request[9:11], 16)
-            payload = request[11:11 + count * 4]
-            for i in range(count):
-                self.words[start + i] = int(payload[i * 4:(i + 1) * 4], 16)
+        address = int(request[2:6], 16)
+        nbytes = int(request[6:8], 16)
+        if command == b"0":                          # 读
+            if address >= 0x1000:                    # D 区
+                assert address % 2 == 0
+                first = (address - 0x1000) // 2
+                data_hex = "".join(swap_bytes_hex(self.words.get(first + i, 0))
+                                   for i in range(nbytes // 2))
+            else:                                    # M 区位字节
+                first = (address - 0x0100) * 8
+                data_hex = ""
+                for i in range(nbytes):
+                    value = 0
+                    for bit in range(8):
+                        if self.bits.get(first + i * 8 + bit, False):
+                            value |= 1 << bit
+                    data_hex += f"{value:02X}"
+            return self._reply_frame(data_hex)
+        if command == b"1":                          # 写
+            payload = request[8:8 + nbytes * 2].decode("ascii")
+            if address >= 0x1000:
+                first = (address - 0x1000) // 2
+                for i in range(nbytes // 2):
+                    self.words[first + i] = swap_hex_bytes(payload[i * 4:(i + 1) * 4])
+            else:
+                self.bits[(address - 0x0100) * 8] = payload != "00"
             return bytes([ACK])
         raise AssertionError(f"未知 FX 命令: {request!r}")
 
@@ -88,10 +107,21 @@ def test_read_bit_maps_m_device(fx_env):
     assert plc.read_bit(0, 0) is False        # M0（左复位）默认 False
 
 
+def test_read_mixed_byte_bits(fx_env):
+    plc, bits, _, _ = fx_env
+    bits[3] = True
+    bits[4] = True
+    bits[6] = True
+    assert plc.read_bit(0, 3) is True
+    assert plc.read_bit(0, 4) is True
+    assert plc.read_bit(0, 5) is False
+    assert plc.read_bit(0, 6) is True
+
+
 def test_write_bit_sets_and_clears(fx_env):
     plc, bits, _, _ = fx_env
     plc.enable_writes(True)
-    plc.write_bit(1, 0, True)                 # M8 = 左合格?
+    plc.write_bit(1, 0, True)                 # M8
     assert bits[8] is True
     assert plc.read_bit(1, 0) is True
     plc.write_bit(1, 0, False)
