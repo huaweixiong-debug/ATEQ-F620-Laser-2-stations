@@ -60,6 +60,8 @@ def test_single_station_and_no_scan_widgets(window):
     assert window.findChild(QLineEdit, "scanner_input") is None
     assert hasattr(window, "laser_status")
     assert "激光" in window.laser_status.text() or "SIMULATE" in window.laser_status.text()
+    # 最后一列（周期号）不拉伸占满页面宽度。
+    assert card.table.horizontalHeader().stretchLastSection() is False
 
 
 def test_full_marking_cycle_via_ui(window):

@@ -378,7 +378,8 @@ class StationPanel(QFrame):
         # 列宽随内容自适应，配合像素级横向滚动：时间/二维码等字段完整显示，
         # 不再出现省略号截断。
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        header.setStretchLastSection(True)
+        # 最后一列（周期号）不拉伸：按内容宽度显示，避免占满整页宽度。
+        header.setStretchLastSection(False)
         header.setMinimumSectionSize(52)
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         header.setTextElideMode(Qt.TextElideMode.ElideNone)
