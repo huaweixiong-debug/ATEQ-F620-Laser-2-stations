@@ -99,7 +99,10 @@ def run_preflight(settings: Settings, probe_devices: bool = True) -> PreflightRe
 
     if settings.weight_enabled:
         if probe_devices:
-            checks.append(_probe_weight(settings))
+            try:
+                checks.append(_probe_weight(settings))
+            except Exception as exc:
+                checks.append(PreflightCheck("称重", False, f"{type(exc).__name__}: {exc}"))
         else:
             checks.append(PreflightCheck("称重", True, f"{settings.weight_com} 配置启用（未探测）"))
 
