@@ -377,10 +377,10 @@ class StationPanel(QFrame):
         header = table.horizontalHeader()
         # 列宽随内容自适应，配合像素级横向滚动：时间/二维码等字段完整显示，
         # 不再出现省略号截断。
-        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        # 最后一列（周期号）不拉伸：按内容宽度显示，避免占满整页宽度。
+        # 各列横向均分填满表格宽度（周期号不再独占剩余空间，也不会过窄）。
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         header.setStretchLastSection(False)
-        header.setMinimumSectionSize(52)
+        header.setMinimumSectionSize(80)
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         header.setTextElideMode(Qt.TextElideMode.ElideNone)
         header.setFixedHeight(max(40, METRICS.table_header_height))
