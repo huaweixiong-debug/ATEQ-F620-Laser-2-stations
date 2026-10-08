@@ -16,7 +16,7 @@ plc_baud = 9600
 plc_parity = "E"
 plc_databits = 7
 plc_stopbits = 1
-points_path = "config/points_240429.toml"
+points_path = "config/points_240429_B.toml"
 points_confirmed = false   # laser_start 地址经电气确认后改 true
 
 # ---- B 侧 PLC 中转服务（供 A 电脑经网络读写 PLC）----
@@ -34,8 +34,8 @@ weight_poll_ms = 500
 
 # ---- ATEQ F620（本工位串口）----
 ateq_com = "COM4"
-ateq_slave = 1
-ports_confirmed = false    # 逐台确认后改 true
+ateq_slave = 255           # 2026-10-08 现场实测：COM4 / slave 255 / 9600 8E1
+ports_confirmed = true     # 2026-10-08 现场确认
 
 # ---- 数据库 / 数据 / 打码 ----
 database = "test"

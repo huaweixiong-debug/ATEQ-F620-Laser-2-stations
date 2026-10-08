@@ -1,0 +1,34 @@
+# ============================================================================
+# 240429 箱体气密封机 PLC 点位表（三菱 FX3GA-40MT，profile = "fx"）
+#
+# B 电脑（右工位）专用。A 电脑用 points_240429.toml（左工位）。
+# 来源：老 LabVIEW 工程 NI OPC Servers 标签（Simulation Driver Demo.opf，
+# Channel2/Mitsubishi FX 驱动，2026-09-20 从 .opf 还原），老机已验证在用。
+#
+# ⚠️ 书写规则：FX 位元件按 byte.bit 拆分，元件号 = byte*8 + bit
+#    M0=M0.0  M1=M0.1  M3=M0.3  M4=M0.4  M5=M0.5  M6=M0.6
+#    M466=M58.2  M467=M58.3  M890=M111.2  M891=M111.3
+#
+# ⚠️ laser_start / laser_done 是 101 新流程新增信号（老机打码不走 PLC 位），
+#    具体地址必须等电气点位表确认后替换，再置 points_confirmed = true。
+# ============================================================================
+
+[meta]
+profile = "fx"
+
+[points]
+# --- 本工位（B=右）---
+start           = "M0.3"    # B 工位启动 = 右复位 M3（上升沿开周期）
+result_ok       = "M0.4"    # B 工位合格 = 右合格 M4（上位机回写）
+result_ng       = "M0.6"    # B 工位不合格 = 右不合格 M6（上位机回写）
+
+# --- 激光打码（B 电脑本地写；A 电脑经中转由 B 代写）---
+laser_start     = "M40.0"   # ⚠️ 占位：待电气确认
+laser_done      = "M40.1"   # ⚠️ 占位：可选，待电气确认
+
+# --- 可选公共信号 ---
+sample          = "M58.3"   # 样件模式（老 M467）
+isolation_init  = "M58.2"   # 隔离箱初始化（老 M466）
+shield_cylinder = "M111.2"  # B 工位屏蔽气缸 = 右屏蔽气缸 M890
+# A（左）工位对照：start=M0.0(M0) result_ok=M0.1(M1) result_ng=M0.5(M5)
+#                 shield_cylinder=M111.3(M891)

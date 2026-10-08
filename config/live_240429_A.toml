@@ -10,7 +10,7 @@ mode = "live"
 station = "A"
 
 # ---- PLC（经 B 电脑中转，token 必须与 B 电脑 relay_token 一致）----
-plc_relay_host = "192.168.1.20"   # ⚠️ 改成 B 电脑的实际 IP
+plc_relay_host = "192.168.7.20"   # B 电脑实际 IP（2026-10-08 现场确认可达）
 plc_relay_port = 9101
 plc_relay_token = "xiezhong-240429"
 points_path = "config/points_240429.toml"
@@ -20,9 +20,9 @@ points_confirmed = false   # laser_start 地址经电气确认后改 true
 weight_enabled = false
 
 # ---- ATEQ F620（A 工位自己的串口）----
-ateq_com = "COM4"
-ateq_slave = 1
-ports_confirmed = false    # 逐台确认后改 true
+ateq_com = "COM3"
+ateq_slave = 255           # 2026-10-08 现场实测：COM3 / slave 255 / 9600 8E1
+ports_confirmed = true     # 2026-10-08 现场确认
 
 # ---- 数据库 / 数据 / 打码 ----
 database = "test"
