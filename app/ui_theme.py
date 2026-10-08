@@ -117,6 +117,11 @@ class UiTextCatalog:
             "English": "Single-mode marking is not enabled: switch to Dual Test before starting the cycle (pending schema approval)",
             "Français": "Marquage en mode simple non activé : passez en Dual Test avant de démarrer le cycle (approbation du schéma en attente)",
         },
+        "pressure_alarm": {
+            "中文": "工位 {station} 压力开关报警",
+            "English": "Station {station} pressure switch alarm",
+            "Français": "Poste {station} : alarme pressostat",
+        },
         "reprint_denied": {"中文": "重打拒绝：{error}", "English": "Reprint denied: {error}", "Français": "Réimpression refusée : {error}"},
         "reset_error": {"中文": "复位错误：{error}", "English": "Reset error: {error}", "Français": "Erreur reset : {error}"},
         "query_range": {"中文": "开始时间不能晚于结束时间", "English": "Start must be before finish", "Français": "Le début doit précéder la fin"},

@@ -158,6 +158,7 @@ class StationPanel(QFrame):
         self.test_finished.connect(self._finish_test)
         self.model_config = None
         self._error_key = None
+        self._pressure_alarm_active = False
         self.controller = StationController(station, repository, marker, ateq or FakeAteq(), journal,
             safe_stop=plc, license_status=security.license_status, security=security)
         self.stepcode_updated.connect(self._apply_stepcode_display)
@@ -206,7 +207,9 @@ class StationPanel(QFrame):
                 if isinstance(child, QLabel):
                     child.setWordWrap(True); child.setMaximumWidth(110)
         outer.addLayout(top)
-        alerts = QHBoxLayout(); alerts.setSpacing(8); self.reprint = QPushButton(f"重打码 {station.value}"); self.reprint.setObjectName(f"reprint_{station.value}"); self.reprint.setProperty("compact", True); self.reprint.setFixedHeight(32); self.reprint.clicked.connect(self.remark); alerts.addWidget(self.reprint); alerts.addStretch(1); outer.addLayout(alerts)
+        alerts = QHBoxLayout(); alerts.setSpacing(8); self.reprint = QPushButton(f"重打码 {station.value}"); self.reprint.setObjectName(f"reprint_{station.value}"); self.reprint.setProperty("compact", True); self.reprint.setFixedHeight(32); self.reprint.clicked.connect(self.remark); alerts.addWidget(self.reprint)
+        self.pressure_alarm_label = QLabel(); self.pressure_alarm_label.setObjectName(f"pressure_alarm_{station.value}"); self.pressure_alarm_label.setProperty("state", "ng"); self.pressure_alarm_label.setWordWrap(True); self.pressure_alarm_label.setVisible(False); alerts.addWidget(self.pressure_alarm_label)
+        alerts.addStretch(1); outer.addLayout(alerts)
         self.table = self._table(f"{station.value}List")
         self.list_title = QLabel(f"{station.value} List"); self.list_title.setObjectName("pageTitle"); self.list_title.setVisible(False); outer.addWidget(self.list_title); outer.addWidget(self.table, 1)
         self._outer_layout = outer
@@ -461,6 +464,30 @@ class StationPanel(QFrame):
 
     def _calibration(self):
         return self.calibration_provider(self.station) if self.calibration_provider else None
+
+    def set_pressure_alarm(self, active: bool) -> None:
+        """PLC->PC 压力开关报警显示（只读轮询，不参与联锁）。"""
+        active = bool(active)
+        if active == self._pressure_alarm_active:
+            return
+        self._pressure_alarm_active = active
+        self._refresh_pressure_alarm()
+        trace = getattr(self.window(), "_live_trace", None)
+        if trace is not None:
+            trace(f"PRESSURE_ALARM station={self.station.value} active={active}")
+
+    def _refresh_pressure_alarm(self) -> None:
+        active = self._pressure_alarm_active
+        self.pressure_alarm_label.setVisible(active)
+        if active:
+            language = getattr(self.window(), "_language", "中文")
+            self.pressure_alarm_label.setText(
+                UiTextCatalog.message(language, "pressure_alarm", station=self.station.value))
+        indicator = self.indicators.get("pressure")
+        if indicator is not None:
+            indicator.setProperty("state", "ng" if active else "ok")
+            indicator.style().unpolish(indicator)
+            indicator.style().polish(indicator)
 
     def _m(self, value, field):
         if value is None:
@@ -759,6 +786,7 @@ class StationPanel(QFrame):
             values = {signal: False for signal, _ in INDICATOR_NAMES}
             values["start_validation"] = self._point_read("start") if self.point_map.has("start") else False
         language = getattr(self.window(), "_language", "中文")
+        self._refresh_pressure_alarm()
         notice, notice_state, button_caption = self._calibration_prompt(calibration, language)
         self.calibration_notice.setText(notice)
         self.calibration_notice.setProperty("state", notice_state)
@@ -948,6 +976,10 @@ class MainWindow(QMainWindow):
         self.ateq_heartbeat_timer = QTimer(self)
         self.ateq_heartbeat_timer.setInterval(100)
         self.ateq_heartbeat_timer.timeout.connect(self._ateq_heartbeat)
+        self.pressure_alarm_timer = QTimer(self)
+        self.pressure_alarm_timer.setInterval(2000)
+        self.pressure_alarm_timer.timeout.connect(self._poll_pressure_alarm)
+        self.pressure_alarm_timer.start()
         self._last_live_stepcode = None
         self.cards[0].stepcode_updated.connect(lambda value: self._remember_live_stepcode(self.station, value))
         # Configuration diagnostics only; physical cycles are dispatched
@@ -1049,6 +1081,19 @@ class MainWindow(QMainWindow):
         if no: no.setText({"中文": "取消", "English": "Cancel", "Français": "Annuler"}[self._language])
         answer = box.exec()
         return answer == QMessageBox.StandardButton.Yes
+
+    def _poll_pressure_alarm(self):
+        """PLC->PC 压力开关报警：2 秒只读轮询（显示用，不参与联锁）。"""
+        card = self.cards[0]
+        if not card.point_map.has("pressure_alarm"):
+            return
+        try:
+            byte, bit = card.point_map.address("pressure_alarm")
+            active = bool(card.plc.read_bit(byte, bit))
+        except Exception as exc:
+            self._live_trace(f"PRESSURE_ALARM_READ_FAILED {type(exc).__name__}: {exc}")
+            return
+        card.set_pressure_alarm(active)
 
     def _ateq_heartbeat(self):
         """Keep the F620 Modbus session alive with a read-only status poll."""
@@ -1288,6 +1333,9 @@ class MainWindow(QMainWindow):
         if timer is not None:
             timer.stop()
         timer = getattr(self, "ateq_heartbeat_timer", None)
+        if timer is not None:
+            timer.stop()
+        timer = getattr(self, "pressure_alarm_timer", None)
         if timer is not None:
             timer.stop()
         for ateq in getattr(self, "live_ateq", {}).values():

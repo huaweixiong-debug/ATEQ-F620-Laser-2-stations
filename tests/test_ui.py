@@ -332,6 +332,27 @@ def test_live_default_calibration_sample_still_starts(window, tmp_path, monkeypa
     assert isinstance(card.controller.ateq, FakeAteq)
 
 
+def test_pressure_alarm_poll_updates_label(window):
+    import dataclasses as dc
+
+    card = window.cards[0]
+    points = dc.replace(card.point_map, addresses={
+        **card.point_map.addresses, "pressure_alarm": (110, 6)})
+    card.point_map = points
+    window.point_map = points
+    assert window.pressure_alarm_timer.interval() == 2000
+    assert card.pressure_alarm_label.isHidden() is True
+    window.plc.write_bit(110, 6, True)
+    window._poll_pressure_alarm()
+    assert card.pressure_alarm_label.isHidden() is False
+    assert "压力开关报警" in card.pressure_alarm_label.text()
+    assert card.indicators["pressure"].property("state") == "ng"
+    window.plc.write_bit(110, 6, False)
+    window._poll_pressure_alarm()
+    assert card.pressure_alarm_label.isHidden() is True
+    assert card.indicators["pressure"].property("state") == "ok"
+
+
 def test_journal_dir_uses_env_override(window, tmp_path):
     assert window.journal_dir == tmp_path / "journal"
 

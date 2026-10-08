@@ -4,7 +4,7 @@
 """
 import pytest
 
-from app.fx_protocol import (STX, ETX, ACK, lrc, swap_bytes_hex, swap_hex_bytes)
+from app.fx_protocol import (STX, ETX, ACK, NAK, lrc, swap_bytes_hex, swap_hex_bytes)
 from app.plc import FxSerialPlc, FakeFxPlc
 
 
@@ -17,6 +17,7 @@ class FakeFxPort:
         self.is_open = True
         self.written: list[bytes] = []
         self._reply = b""
+        self.nak_first_read = False
 
     def close(self):
         self.is_open = False
@@ -58,6 +59,9 @@ class FakeFxPort:
         address = int(request[2:6], 16)
         nbytes = int(request[6:8], 16)
         if command == b"0":                          # 读
+            if self.nak_first_read:
+                self.nak_first_read = False
+                return bytes([NAK])
             if address >= 0x1000:                    # D 区
                 assert address % 2 == 0
                 first = (address - 0x1000) // 2
@@ -140,6 +144,13 @@ def test_read_write_word_d900(fx_env):
     plc.write_word(900, 1234)                 # D900 = 实时重量
     assert words[900] == 1234
     assert plc.read_word(900) == 1234
+
+
+def test_read_retries_once_after_nak(fx_env):
+    plc, bits, _, created = fx_env
+    bits[3] = True
+    created["port"].nak_first_read = True
+    assert plc.read_bit(0, 3) is True      # 首次 NAK，读操作自动重试一次
 
 
 def test_health_ping(fx_env):

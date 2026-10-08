@@ -29,6 +29,9 @@ result_ng       = "M0.5"    # A 工位不合格 = 左不合格 M5（上位机回
 laser_start     = "M111.0"  # A 工位打码 = M888（现场确认）
 # laser_done 未接线：laser_wait_done=false 时不使用；需要完成反馈时再填
 
+# --- 报警（PLC->PC 只读，2 秒轮询）---
+pressure_alarm  = "M110.6"  # A 工位压力开关报警 = M886（现场确认）
+
 # --- 可选公共信号 ---
 sample          = "M58.3"   # 样件模式（老 M467）
 isolation_init  = "M58.2"   # 隔离箱初始化（老 M466）

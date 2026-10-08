@@ -108,6 +108,7 @@ laser_done = "M30.1"
 sample = "M58.3"
 isolation_init = "M58.2"
 shield_cylinder = "M111.3"
+pressure_alarm = "M110.6"
 """
 
 
@@ -119,6 +120,7 @@ def test_fx_profile_parses_high_m_addresses(tmp_path):
     assert point_map.address("result_ng") == (0, 5)
     assert point_map.address("shield_cylinder") == (111, 3)   # M891
     assert point_map.address("isolation_init") == (58, 2)     # M466
+    assert point_map.address("pressure_alarm") == (110, 6)    # M886
 
 
 def test_fx_profile_allows_up_to_m8191(tmp_path):

@@ -16,6 +16,7 @@
 旧实现（BR/WR 命令 + 补码校验 + 6 位地址）在真机全部被 NAK，已由本版本替换。
 """
 from __future__ import annotations
+import time
 from threading import RLock
 
 STX = 0x02
@@ -210,11 +211,12 @@ class FxSerialClient:
 
     def __init__(self, port: str, *, baudrate: int = 9600, parity: str = "E",
                  bytesize: int = 7, stopbits: int = 1, timeout_s: float = 1.0,
-                 serial_factory=None) -> None:
+                 frame_gap_s: float = 0.02, serial_factory=None) -> None:
         self.port = port
         self.baudrate, self.parity = int(baudrate), str(parity).upper()
         self.bytesize, self.stopbits = int(bytesize), int(stopbits)
         self.timeout_s = float(timeout_s)
+        self.frame_gap_s = float(frame_gap_s)
         self.connected = False
         self._serial = None
         self._serial_factory = serial_factory
@@ -266,6 +268,9 @@ class FxSerialClient:
                 reset = getattr(self._serial, "reset_input_buffer", None)
                 if reset is not None:
                     reset()
+                if self.frame_gap_s > 0:
+                    # 编程口半双工：帧间留出 PLC 处理/总线恢复时间，避免偶发 NAK。
+                    time.sleep(self.frame_gap_s)
                 self._serial.write(request)
                 self._serial.flush()
             except Exception:
@@ -295,12 +300,20 @@ class FxSerialClient:
         raise FxProtocolError(f"FX 探活应答异常: {response!r}")
 
     def read_bits(self, device: int, count: int) -> list[bool]:
+        """读位区间；读操作幂等，允许一次重试（绝不重试写/强制）。"""
         first = int(device)
         request = build_read_bits_request(first, count)
         first_bit = first % 8
         nbytes = (first_bit + int(count) + 7) // 8
-        response = self._exchange(request, 2 * nbytes + 4)
-        return parse_read_bits_response(response, first_bit, count)
+        last: FxProtocolError | None = None
+        for _attempt in range(2):
+            try:
+                response = self._exchange(request, 2 * nbytes + 4)
+                return parse_read_bits_response(response, first_bit, count)
+            except FxProtocolError as exc:
+                last = exc
+                time.sleep(0.05)
+        raise last
 
     def write_bits(self, device: int, values: list[bool]) -> None:
         for offset, value in enumerate(values):
@@ -310,8 +323,15 @@ class FxSerialClient:
     def read_words(self, device: int, count: int) -> list[int]:
         count = int(count)
         request = build_read_words_request(device, count)
-        response = self._exchange(request, 2 * count * 2 + 4)
-        return parse_read_words_response(response, count)
+        last: FxProtocolError | None = None
+        for _attempt in range(2):
+            try:
+                response = self._exchange(request, 2 * count * 2 + 4)
+                return parse_read_words_response(response, count)
+            except FxProtocolError as exc:
+                last = exc
+                time.sleep(0.05)
+        raise last
 
     def write_words(self, device: int, values: list[int]) -> None:
         request = build_write_words_request(device, values)
