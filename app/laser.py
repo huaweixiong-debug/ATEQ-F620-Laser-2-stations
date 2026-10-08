@@ -97,20 +97,28 @@ class LaserFileWriter:
             return self._read_bytes(self.path) == self._encode(text)
 
     def clear(self) -> None:
-        """Empty the watched file (self-destruct after marking)."""
+        """清空监听文件（打码后自毁）。
+
+        优先原子替换；若观察程序（激光软件）持有不允许删除/替换的句柄，
+        退回就地截断写——多数监视程序以共享写方式打开文件：允许截断，
+        但不允许替换（替换含删除语义）。
+        """
         with self._lock:
             path = self.path
             temp = self._write_temp(path, b"")
             old = self._read_bytes(path)
             try:
                 os.replace(str(temp), str(path))
+                return
             except BaseException:
                 try:
                     temp.unlink()
                 except OSError:
                     pass
                 self._restore(path, old)
-                raise LaserFileError(f"failed to clear laser file {path}")
+            with path.open("wb") as handle:
+                handle.flush()
+                os.fsync(handle.fileno())
 
     def preflight(self) -> None:
         """Verify the watched directory is writable without touching content."""
@@ -227,6 +235,7 @@ class LaserMarker(MarkerPort):
         self._clock = clock
         self._clear_timer: threading.Timer | None = None
         self._clear_lock = threading.RLock()  # 重入：_schedule_clear 持锁时调用 _cancel_clear_timer
+        self.clear_retry_interval = 2.0       # 清空失败重试间隔（秒）
 
     def mark(self, record: TraceRecord) -> MarkReceipt:
         job_id = f"mark-{record.cycle_id}"
@@ -308,10 +317,14 @@ class LaserMarker(MarkerPort):
     def _clear_channel(self) -> None:
         with self._clear_lock:
             self._clear_timer = None
-        try:
-            self.writer.clear()
-        except Exception:
-            pass
+        attempts = 4
+        for attempt in range(attempts):
+            try:
+                self.writer.clear()
+                return
+            except Exception:
+                if attempt < attempts - 1:
+                    time.sleep(self.clear_retry_interval)
 
 
 class FakeMarker(MarkerPort):

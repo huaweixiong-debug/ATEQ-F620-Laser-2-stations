@@ -121,6 +121,39 @@ def test_writer_publish_verify_clear(tmp_path):
     assert not writer.verify("A\r\nB")
 
 
+def test_writer_clear_truncate_fallback(tmp_path, monkeypatch):
+    import os as _os
+
+    writer = make_writer(tmp_path)
+    writer.publish("A\r\nB\r\n")
+    real_replace = _os.replace
+
+    def blocked(src, dst):
+        if str(dst).endswith("激光码信息.txt"):
+            raise PermissionError("watcher holds the file")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(_os, "replace", blocked)
+    writer.clear()
+    assert (tmp_path / "激光码信息.txt").read_bytes() == b""
+
+
+def test_clear_channel_retries_until_success():
+    class FlakyWriter:
+        def __init__(self):
+            self.calls = 0
+
+        def clear(self):
+            self.calls += 1
+            if self.calls < 3:
+                raise LaserFileError("locked")
+
+    marker = LaserMarker(FlakyWriter(), FakePlc(), sim_point_map())
+    marker.clear_retry_interval = 0.0
+    marker._clear_channel()
+    assert marker.writer.calls == 3
+
+
 def test_writer_encoding(tmp_path):
     writer = make_writer(tmp_path, encoding="utf-8")
     writer.publish("张三")
