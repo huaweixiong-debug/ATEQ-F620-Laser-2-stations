@@ -984,11 +984,10 @@ class StationPanel(QFrame):
         if hasattr(self, "cancel_calibration_button"):
             is_admin = getattr(self.window(), "security", None) is not None and \
                 self.window().security.role.value == "admin"
-            cancelable = bool(calibration and (
-                calibration.due or calibration.validation_started or calibration.clear_pending))
-            terminal = c.phase in (Phase.IDLE, Phase.COMPLETE)
             self.cancel_calibration_button.setVisible(is_admin)
-            self.cancel_calibration_button.setEnabled(cancelable and terminal and not c.recovery_required)
+            # 保持可点击：不满足取消条件时由点击处理给出明确原因
+            #（避免按钮灰掉后操作员"点了没反应"）。
+            self.cancel_calibration_button.setEnabled(is_admin)
         prompts = {"中文": {Phase.IDLE: "等待启动", Phase.READY: "一测", Phase.WAIT_2: "二测", Phase.MARKING: "打码", Phase.COMPLETE: "复位或查询", Phase.FAULT: "管理员恢复"}, "English": {Phase.IDLE: "Await start", Phase.READY: "Test 1", Phase.WAIT_2: "Test 2", Phase.MARKING: "Marking", Phase.COMPLETE: "Reset or query", Phase.FAULT: "Admin recovery"}, "Français": {Phase.IDLE: "Attente départ", Phase.READY: "Test 1", Phase.WAIT_2: "Test 2", Phase.MARKING: "Marquage", Phase.COMPLETE: "Réinitialiser ou requête", Phase.FAULT: "Récupération admin"}}
         narrow_error = bool(self._error_key) and self.window().width() < 1600
         # At the narrow error breakpoint the station card can be only a few
@@ -1430,6 +1429,9 @@ class MainWindow(QMainWindow):
                                    card.staff.currentText().strip() or "Operator", mode,
                                    str(config.ateq_program),
                                    date_scheme=self._resolved_date_scheme(config))
+        # 每个周期开始前恢复本机 PLC 连接与写门禁：带 journal 重启后适配器
+        # 可能处于断开/写禁用状态，否则本周期打码会被 capability policy 拒绝。
+        card.reconnect_plc()
         card.controller.start_cycle(selection)
         card.refresh()
         self._live_trace(
@@ -2277,8 +2279,13 @@ class MainWindow(QMainWindow):
             self.security.require("calibration_cancel")
             calibration = self.calibration[station]
             card = self._card_for_station(station)
+            if card.controller.recovery_required:
+                raise RuntimeError(
+                    "存在未完成周期：请先在【手动/Manual】页归档或按机器面板复位，再取消校准")
             if not (calibration.due or calibration.validation_started or calibration.clear_pending):
                 raise RuntimeError("当前工位没有待取消的校准状态")
+            if card.controller.phase is Phase.FAULT:
+                raise RuntimeError("当前工位处于故障：请先复位/归档后再取消校准")
             if card.controller.phase not in (Phase.IDLE, Phase.COMPLETE):
                 raise RuntimeError("当前测试尚未结束，不能取消校准")
             if reason is None:

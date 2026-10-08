@@ -271,11 +271,15 @@ class RemoteFxPlc:
             return False
 
     def safe_stop(self, reason: str) -> None:
+        """仅停本机（A 侧）：关闭写门禁并断开中转客户端。
+
+        ⚠️ 不把 safe_stop 转发给 B 的本地 PLC 适配器——A 工位的故障不得
+        断开 B 的 PLC 连接/写门禁（否则 B 打码、A 自身经 relay 的读写、
+        B 本机生产都会被连带破坏）。机器侧安全由 PLC 程序负责，本机写
+        门禁已足够。
+        """
         self._writes_enabled = False
-        try:
-            self._call({"op": "safe_stop", "reason": str(reason)})
-        except Exception:
-            pass
+        self.last_error = f"safe_stop: {reason}"
         self.disconnect()
 
     def outputs_energized(self) -> bool:

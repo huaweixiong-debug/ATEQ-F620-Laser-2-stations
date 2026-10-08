@@ -117,7 +117,9 @@ def test_remote_safe_stop_and_errors():
         client = RemoteFxPlc("127.0.0.1", port, token="t")
         client.connect()
         client.safe_stop("测试")
-        assert plc.last_safe_stop == "测试"
+        # A 侧故障安全停止不得停掉 B 的本地 PLC（不远程转发 safe_stop）
+        assert plc.last_safe_stop == ""
+        assert client.connected is False
         client.close()
     finally:
         server.stop()
