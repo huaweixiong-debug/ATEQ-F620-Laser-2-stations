@@ -126,12 +126,14 @@ class StationController:
             self.record.first = measurement
             self._db_insert_stage1()
             if measurement.result is Result.OK:
-                # 双测：两测都合格才进入打码；单测：一次合格即打码。
-                # 样件周期默认不打码（mark_samples 配置可放开）。
-                if self.record.sample_cycle and not self._sample_marking_enabled():
+                # 双测（含样件）第一腔 OK 后仪器继续测正压，必须等第二腔；
+                # 单测一次合格即打码，样件周期默认不打码（mark_samples 可放开）。
+                if self.record.test_mode == "dual":
+                    self.phase = Phase.WAIT_2
+                elif self.record.sample_cycle and not self._sample_marking_enabled():
                     self.phase = Phase.COMPLETE
                 else:
-                    self.phase = Phase.MARKING if self.record.test_mode == "single" else Phase.WAIT_2
+                    self.phase = Phase.MARKING
             else:
                 # 第一腔 NG：仪器自身终止检测，不会有第二次测试结果，
                 # 周期立即完成（记录落库、不打码）；单测 NG 同理。
