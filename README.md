@@ -27,7 +27,9 @@
   `日期、产品型号、测试压力1、泄漏量1、测试压力2、泄漏量2、结果、操作工`。
 - 打码文本内容以**数据库提交后的记录回读**生成，保证"打的数据 = 存的数据"。
 - 第一腔 NG 时 ATEQ 仪器自行终止、不会有第二次结果，上位机立即结束该周期（Morocco 原版在此处会傻等第二次结果，已修正）。
-- NG/OK 样件验证逻辑与校准时效倒计时与 Morocco 项目完全一致；样件周期默认不打码。
+- 校准到期后须点“启动验证”，再做一件 NG 首件 + 一件 OK 二件（均不打码），之后才恢复生产与打码；未完成时 PLC 仍可启动测试，但不建周期、不写库、不出打码文本。
+  样件与产品同一硬件时序：NG 首件最终结果为 NG 即通过（负压 NG 仪器终止，或负压 OK 后正压 NG）；OK 二件双测须负压、正压都 OK。
+  不符合预期时保留记录、不推进，下一次 PLC 启动自动按同阶段重测；仪器报警（含压力高/低）按故障处理，复位后重测。单/双测在启动验证时冻结。
 
 ## 部署架构
 
@@ -61,7 +63,7 @@ app/
 ├── repository.py      # Fake / PyMySQL（schema v2：marked + Mark Time）
 ├── composition.py     # simulate/shadow/live 装配 + CapabilityPolicy
 ├── live_preflight.py  # LIVE 预检（点位/PLC/ATEQ/激光目录/型号/MySQL）
-├── calibration.py     # NG→OK 样件验证 + 时效倒计时（与 Morocco 一致）
+├── calibration.py     # NG→OK 样件验证、judge_sample 判定 + 时效倒计时
 ├── ui.py / ui_replica.py  # PySide6 主界面（单工位四页：测试/设置/查询/手动）
 └── ui_theme.py        # 主题与多语言（中/英/法）
 config/
