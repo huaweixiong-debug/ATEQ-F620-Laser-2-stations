@@ -227,6 +227,52 @@ def test_calibration_date_scheme_uses_same_resolver(window):
     assert window.cards[0].controller.record.date_scheme == "YYMMDD"
 
 
+def test_start_validation_freezes_button_mode(window):
+    card = window.cards[0]
+    card.part_no.setCurrentText(PART)
+    card.mode_button.setChecked(False)
+    window.mark_calibration_due(window.station)
+    assert window.start_calibration(window.station) is True
+    calibration = window.calibration[window.station]
+    assert calibration.test_mode == "single"
+    assert card.controller.record.test_mode == "single"
+    card.refresh()
+    assert not card.mode_button.isEnabled()
+    # 验证期间按钮即使被程序改动，refresh 也恢复为冻结模式。
+    card.mode_button.setChecked(True)
+    card.refresh()
+    assert card.mode_button.isChecked() is False
+
+
+def test_calibration_mode_persisted_and_restored(window):
+    card = window.cards[0]
+    card.part_no.setCurrentText(PART)
+    card.mode_button.setChecked(False)
+    window.mark_calibration_due(window.station)
+    window.start_calibration(window.station)
+    window._persist_calibration()
+    calibration = window.calibration[window.station]
+    calibration.test_mode = "dual"
+    window._restore_calibration()
+    assert calibration.test_mode == "single"
+
+
+def test_calibration_restore_old_snapshot_defaults_dual(window):
+    import json
+
+    calibration = window.calibration[window.station]
+    calibration.test_mode = "single"
+    window._calibration_state_path.write_text(json.dumps({window.station.value: {
+        "due": True, "locked": True, "validation_started": True,
+        "phase": "WAIT_OK", "ng_count": 1, "ok_count": 0,
+        "remaining_seconds": 0.0, "period_seconds": 7200,
+        "clear_pending": False, "sample_demand": "OK", "audit_events": [],
+    }}), encoding="utf-8")
+    window._restore_calibration()
+    assert calibration.phase is CalibrationPhase.WAIT_OK
+    assert calibration.test_mode == "dual"
+
+
 def test_calibration_ng_ok_validation(window):
     card = window.cards[0]
     card.part_no.setCurrentText(PART)
@@ -332,8 +378,9 @@ def test_simulate_single_mode_production_still_starts(window):
 
 
 def test_live_calibration_site_guard_blocks_mark_samples(window, tmp_path):
+    # 样件按冻结模式运行：双测样件打码与双测生产一致，守卫只拦截单测打码。
     card, repository = _live_like_window(window, tmp_path)
-    card.mode_button.setChecked(True)
+    card.mode_button.setChecked(False)
     card.controller.mark_samples = True
     called = []
     card.controller.start_cycle = lambda selection, **kw: called.append(selection)
@@ -383,13 +430,13 @@ def test_live_default_calibration_sample_still_starts(window, tmp_path, monkeypa
     assert len(start_calls) == 1
     selection, kwargs = start_calls[0]
     assert kwargs.get("sample") is True
-    assert selection.test_mode == "single"
+    assert selection.test_mode == "dual"
     assert selection.product_id == PART
     assert selection.station is StationId.A
     record = card.controller.record
     assert record.sample_cycle is True
     assert record.part_no == PART
-    assert record.test_mode == "single"
+    assert record.test_mode == "dual"
     assert card.controller.phase is Phase.READY
     assert write_calls == []
     assert connect_calls == []

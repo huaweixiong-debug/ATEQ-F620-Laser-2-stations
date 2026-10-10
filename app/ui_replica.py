@@ -1036,6 +1036,14 @@ class StationPanel(QFrame):
             self.start_validation_button.setEnabled(can_start)
             self.start_validation_button.setText(button_caption)
             self.start_validation_button.setToolTip(notice)
+        if hasattr(self, "mode_button"):
+            # 验证期间单/双测是冻结契约：按钮置灰并显示冻结值。
+            mode_locked = bool(calibration and calibration.validation_started)
+            if mode_locked:
+                frozen_dual = calibration.test_mode == "dual"
+                if self.mode_button.isChecked() != frozen_dual:
+                    self.mode_button.setChecked(frozen_dual)
+            self.mode_button.setEnabled(not mode_locked)
         if hasattr(self, "cancel_calibration_button"):
             is_admin = getattr(self.window(), "security", None) is not None and \
                 self.window().security.role.value == "admin"
@@ -1257,7 +1265,7 @@ class MainWindow(QMainWindow):
     def _single_mode_marking_unsupported(self, card, *, sample: bool) -> bool:
         """True for marking-capable single-mode cycles on the MySQL live path.
 
-        Sample sites (``sample=True``) always freeze ``test_mode="single"`` and
+        Sample sites (``sample=True``) use the mode frozen by Start Validation and
         can only reach ``mark()`` when ``mark_samples`` is enabled
         (``station.py:126-136``); the default live calibration sample stays
         allowed.  SIMULATE and non-MySQL repositories are unaffected.
@@ -1265,8 +1273,11 @@ class MainWindow(QMainWindow):
         if not self.live_mode or not isinstance(card.controller.repository,
                                                  PyMySQLRepository):
             return False
-        mode = "single" if sample else ("dual" if card.mode_button.isChecked()
-                                        else "single")
+        button_mode = "dual" if card.mode_button.isChecked() else "single"
+        calibration = self.calibration[card.station]
+        # 样件按启动验证时冻结的模式运行；启动前（守卫先于冻结调用）看按钮。
+        mode = (calibration.test_mode if sample and calibration.validation_started
+                else button_mode)
         marking_capable = (not sample) or card.controller.mark_samples
         return mode == "single" and marking_capable
 
@@ -2276,6 +2287,7 @@ class MainWindow(QMainWindow):
                 "period_seconds": cal.period_seconds,
                 "clear_pending": cal.clear_pending,
                 "sample_demand": cal.sample_demand,
+                "test_mode": cal.test_mode,
                 "audit_events": [dict(event) for event in cal.audit_events],
             }
         signature = repr(sorted(snapshot.items()))
@@ -2322,6 +2334,9 @@ class MainWindow(QMainWindow):
                     # 现场规则：验证完成后无需扫码，恢复即清灯并启动倒计时。
                     cal.clear_after_resume()
                 cal.sample_demand = str(state.get("sample_demand", ""))
+                mode = str(state.get("test_mode", "dual"))
+                # 旧快照没有该字段：现场为双测，按双测恢复。
+                cal.test_mode = mode if mode in ("single", "dual") else "dual"
                 cal._last_tick = time.monotonic()
             except (KeyError, ValueError, TypeError):
                 continue
@@ -2521,8 +2536,8 @@ class MainWindow(QMainWindow):
                 f"reason=single_mode_unsupported")
             raise RuntimeError(
                 UiTextCatalog.message(self._language, "single_mode_unsupported"))
-        calibration.begin_validation()
-        # 校准周期内部冻结型号/人员（单测模式）；样件周期默认不打码。
+        calibration.begin_validation("dual" if card.mode_button.isChecked() else "single")
+        # 校准周期冻结型号/人员/单双测模式；样件周期默认不打码。
         if controller.record is None:
             part_no = card.part_no.currentText().strip()
             if part_no:
@@ -2534,7 +2549,7 @@ class MainWindow(QMainWindow):
                     raise
                 selection = CycleSelection(station, part_no,
                                            card.staff.currentText().strip() or "Operator",
-                                           "single", str(config.ateq_program),
+                                           calibration.test_mode, str(config.ateq_program),
                                            date_scheme=self._resolved_date_scheme(config))
                 controller.start_cycle(selection, sample=True)
                 card.refresh()
