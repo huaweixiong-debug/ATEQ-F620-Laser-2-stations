@@ -273,35 +273,142 @@ def test_calibration_restore_old_snapshot_defaults_dual(window):
     assert calibration.test_mode == "dual"
 
 
-def test_calibration_ng_ok_validation(window):
+def _edge(window, qapp, result=None, timeout_s=3.0):
+    """模拟一次 StepCode 0→4 上升沿，等待异步测试与 _finish_test 处理完。"""
+    card = window.cards[0]
+    if result is not None:
+        card.controller.ateq.result = result
+    window._handle_live_stepcode(window.station, 0)
+    window._handle_live_stepcode(window.station, 4)
+    deadline = time.monotonic() + timeout_s
+    while getattr(card, "_test_worker_running", False) and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    # test_finished 由工作线程发出，排队到 GUI 线程执行 _finish_test。
+    for _ in range(10):
+        qapp.processEvents()
+        time.sleep(0.005)
+    return card
+
+
+def _start_sample_validation(window, dual=True):
     card = window.cards[0]
     card.part_no.setCurrentText(PART)
     card.staff.setCurrentText("张三")
-    window.start_calibration(window.station)
-    calibration = window.calibration[window.station]
-    assert calibration.phase is CalibrationPhase.WAIT_NG
+    card.mode_button.setChecked(dual)
+    window.mark_calibration_due(window.station)
+    assert window.start_calibration(window.station) is True
+    return card, window.calibration[window.station]
+
+
+def test_sample_validation_main_flow_then_production_marks(window, qapp):
+    card, cal = _start_sample_validation(window)
+    marker = window.marker
+    _edge(window, qapp, Result.NG)              # NG 件：负压 NG，仪器终止
+    assert cal.phase is CalibrationPhase.WAIT_OK
+    _edge(window, qapp, Result.OK)              # OK 件负压
+    assert card.controller.phase is Phase.WAIT_2
     assert card.controller.record.sample_cycle is True
-    # NG 样件：单测 NG → 完成 → 记录验证结果。
-    card.controller.ateq.result = Result.NG
-    card.controller.test_first()
+    ok_cycle = card.controller.record.cycle_id
+    # 腔序错位回归：负压 OK 不能放行工位。
+    assert cal.phase is CalibrationPhase.WAIT_OK
+    assert cal.validation_started and cal.locked
+    _edge(window, qapp, Result.OK)              # OK 件正压，落在同一样件周期
+    rows = [r for r in window.repository.records.values() if r.cycle_id == ok_cycle]
+    assert rows and rows[0].second is not None and rows[0].second.result is Result.OK
+    assert cal.phase is CalibrationPhase.COMPLETE
+    assert not cal.validation_started and not cal.locked
+    assert cal.remaining_seconds == cal.period_seconds
+    assert cal.indicators == (False, False, False)
+    assert marker.intents == set()               # 样件全程不打码
+    card.refresh()
+    assert card.mode_button.isEnabled()
+    _edge(window, qapp, Result.OK)              # 生产件负压
+    assert card.controller.record.sample_cycle is False
+    assert card.controller.phase is Phase.WAIT_2
+    _edge(window, qapp, Result.OK)              # 生产件正压 → 打码
     assert card.controller.phase is Phase.COMPLETE
-    window.on_calibration_sample("NG", window.station)
-    assert calibration.phase is CalibrationPhase.WAIT_OK
-    # OK 样件：桥接复位 NG 周期并开 OK 样件周期。
-    assert window._begin_ok_validation_cycle(card) is True
+    assert card.controller.record.marked is True
+    assert len(marker.intents) == 1
+
+
+def test_waiting_ng_but_sample_passes_both_chambers_retries_ng(window, qapp):
+    card, cal = _start_sample_validation(window)
+    _edge(window, qapp, Result.OK)              # 负压 OK
+    assert card.controller.phase is Phase.WAIT_2
+    _edge(window, qapp, Result.OK)              # 正压 OK → 不符合预期
+    assert card.controller.phase is Phase.COMPLETE
+    assert cal.phase is CalibrationPhase.WAIT_NG
+    assert card._error_key == "sample_expected_ng"
+    failed_cycle = card.controller.record.cycle_id
+    _edge(window, qapp, Result.NG)              # 自动按 NG 阶段重测，不卡死
+    assert card.controller.record.cycle_id != failed_cycle
     assert card.controller.record.sample_cycle is True
-    card.controller.ateq.result = Result.OK
-    card.controller.test_first()
-    # 样件默认不打码：单测 OK 直接完成。
-    assert card.controller.phase is Phase.COMPLETE
-    window.on_calibration_sample("OK", window.station)
-    # 现场规则：OK 验证完成即清灯并重启倒计时（无需扫码确认）。
-    assert calibration.phase is CalibrationPhase.COMPLETE
-    assert calibration.clear_pending is False
-    assert calibration.remaining_seconds == calibration.period_seconds
-    # 工位已释放，可开新的生产周期；三灯保持熄灭。
-    assert window._prepare_stepcode_production_cycle(card) is True
-    assert calibration.indicators == (False, False, False)
+    assert cal.phase is CalibrationPhase.WAIT_OK
+    assert card._error_key is None
+
+
+def test_ng_sample_negative_ok_positive_ng_passes(window, qapp):
+    card, cal = _start_sample_validation(window)
+    _edge(window, qapp, Result.OK)
+    _edge(window, qapp, Result.NG)
+    assert cal.phase is CalibrationPhase.WAIT_OK
+    assert card._error_key is None
+
+
+def test_ok_sample_positive_ng_retries_from_negative(window, qapp):
+    card, cal = _start_sample_validation(window)
+    _edge(window, qapp, Result.NG)
+    _edge(window, qapp, Result.OK)
+    _edge(window, qapp, Result.NG)              # 正压 NG → 不符合预期
+    assert cal.phase is CalibrationPhase.WAIT_OK
+    assert card._error_key == "sample_expected_ok"
+    failed_cycle = card.controller.record.cycle_id
+    _edge(window, qapp, Result.OK)              # 重测从负压开始：新周期
+    assert card.controller.record.cycle_id != failed_cycle
+    assert card.controller.phase is Phase.WAIT_2
+    assert card.controller.record.second is None
+    _edge(window, qapp, Result.OK)
+    assert cal.phase is CalibrationPhase.COMPLETE
+
+
+def test_sample_fault_skips_judgement_and_retries_after_reset(window, qapp):
+    card, cal = _start_sample_validation(window)
+    _edge(window, qapp, Result.NG)
+    _edge(window, qapp, Result.OK)              # OK 件负压 OK
+    card.controller.ateq.connected = False
+    _edge(window, qapp)                          # 正压通讯失败 → FAULT
+    assert card.controller.phase is Phase.FAULT
+    assert cal.phase is CalibrationPhase.WAIT_OK  # 不判定、不推进
+    _edge(window, qapp)                          # FAULT 不自动处理
+    assert card.controller.phase is Phase.FAULT
+    card.controller.ateq.connected = True
+    card.reset()
+    assert card.controller.phase is Phase.IDLE
+    assert cal.phase is CalibrationPhase.WAIT_OK and cal.test_mode == "dual"
+    _edge(window, qapp, Result.OK)
+    assert card.controller.record.sample_cycle is True
+    assert card.controller.phase is Phase.WAIT_2
+
+
+def test_due_without_start_validation_blocks_production(window, qapp):
+    card = window.cards[0]
+    card.part_no.setCurrentText(PART)
+    window.mark_calibration_due(window.station)
+    _edge(window, qapp, Result.OK)
+    assert card.controller.record is None
+    assert card.controller.phase is Phase.IDLE
+    assert len(window.repository.records) == 0
+    assert window.marker.intents == set()
+
+
+def test_sample_expectation_catalog_all_languages():
+    from app.ui_theme import UiTextCatalog
+
+    for language in UiTextCatalog.LANGUAGES:
+        for key in ("sample_expected_ng", "sample_expected_ok"):
+            text = UiTextCatalog.message(language, key)
+            assert text and key not in text
 
 
 def _live_like_window(window, tmp_path):

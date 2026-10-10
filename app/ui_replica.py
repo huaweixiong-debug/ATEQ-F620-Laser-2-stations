@@ -29,7 +29,7 @@ from .points import sim_point_map
 from .composition import build_point_map, build_date_code_fn
 from .repository import FakeRepository, PyMySQLRepository
 from .station import StationController
-from .calibration import Calibration, CalibrationPhase
+from .calibration import Calibration, CalibrationPhase, SampleVerdict, judge_sample
 from .settings_service import ProductSettingsService
 from .model_settings import (DATE_SCHEME_PRESETS,
                              GlobalSettingsService, ModelConfig,
@@ -818,19 +818,61 @@ class StationPanel(QFrame):
                 window._apply_plc_reset()
 
     def _handle_calibration_measurement(self):
+        """Judge a sample cycle only after the instrument has finished it.
+
+        Chamber order follows the hardware (first = negative, second =
+        positive).  A faulted cycle is never judged, and a half-finished dual
+        cycle (WAIT_2) only updates the prompt, so the positive-pressure
+        StepCode=4 of an OK sample cannot be taken for the next production part.
+        """
         calibration = self._calibration()
         record = self.controller.record
-        if calibration is None or not calibration.validation_started or record is None:
+        if (calibration is None or not calibration.validation_started
+                or record is None or not record.sample_cycle):
             return
-        measurement = record.second or record.first
-        if measurement is not None:
-            trace = getattr(self.window(), "_live_trace", None)
+        window = self.window()
+        trace = getattr(window, "_live_trace", None)
+        phase = self.controller.phase
+        if phase is Phase.FAULT:
             if trace is not None:
+                trace(f"CAL_SAMPLE_NOT_JUDGED station={self.station.value} reason=fault "
+                      f"stage={calibration.sample_demand} cycle={record.cycle_id}")
+            return
+        if phase not in (Phase.WAIT_2, Phase.COMPLETE, Phase.MARKING):
+            return
+        first = record.first.result if record.first is not None else None
+        second = record.second.result if record.second is not None else None
+        verdict = judge_sample(calibration.phase, calibration.test_mode, first, second)
+        if trace is not None:
+            measurement = record.second or record.first
+            if measurement is not None:
                 trace(f"{self.station.value} TEST_RESULT result={measurement.result.value} "
                       f"pressure={measurement.pressure}{measurement.pressure_unit} "
                       f"leakage={measurement.leakage}{measurement.leakage_unit} "
                       f"raw={measurement.raw_frame.hex()}")
-            self.window().on_calibration_sample(measurement.result.value, self.station)
+            trace(f"CAL_SAMPLE_VERDICT station={self.station.value} "
+                  f"stage={calibration.sample_demand} mode={calibration.test_mode} "
+                  f"first={first.value if first else ''} second={second.value if second else ''} "
+                  f"verdict={verdict.name} cycle={record.cycle_id}")
+        language = getattr(window, "_language", "中文")
+        status = getattr(window, "calibration_status", None)
+        if verdict is SampleVerdict.INCOMPLETE:
+            if status is not None:
+                status.setText({
+                    "中文": f"工位 {self.station.value}：负压 OK，等待正压",
+                    "English": f"Station {self.station.value}: negative OK, waiting for positive",
+                    "Français": f"Poste {self.station.value} : négatif OK, attente du positif",
+                }[language])
+            return
+        if verdict is SampleVerdict.UNEXPECTED:
+            # 记录已落库；阶段不推进，下一次 StepCode=4 由 _prepare_sample_cycle 重建同阶段周期。
+            self._error_key = ("sample_expected_ng"
+                               if calibration.phase is CalibrationPhase.WAIT_NG
+                               else "sample_expected_ok")
+            if status is not None:
+                status.setText(UiTextCatalog.message(language, self._error_key))
+            return
+        window.on_calibration_sample(calibration.sample_demand, self.station)
 
     def mark(self):
         trace = getattr(self.window(), "_live_trace", None)
@@ -1455,7 +1497,7 @@ class MainWindow(QMainWindow):
             return
         phase = card.controller.phase
         if (phase not in (Phase.READY, Phase.WAIT_2)
-                and self._restore_pending_calibration_cycle(card)):
+                and self._prepare_sample_cycle(card)):
             phase = card.controller.phase
         if (phase is Phase.IDLE
                 and not self.calibration[card.station].locked
@@ -1477,8 +1519,6 @@ class MainWindow(QMainWindow):
                 card.first()
             elif phase is Phase.WAIT_2:
                 card.second()
-            elif self._begin_ok_validation_cycle(card):
-                card.first()
             else:
                 self._live_trace(f"ATEQ_STEP_4_IGNORED station={station.value} no READY/WAIT_2 cycle")
         except Exception as exc:
@@ -1523,92 +1563,58 @@ class MainWindow(QMainWindow):
             f"cycle={card.controller.record.cycle_id} mode={mode} program={config.ateq_program}")
         return True
 
-    def _restore_pending_calibration_cycle(self, card) -> bool:
-        """Rebuild a persisted NG/OK calibration cycle after a UI restart.
+    def _prepare_sample_cycle(self, card) -> bool:
+        """Open the next NG/OK sample cycle on a fresh StepCode=4.
 
-        Calibration state is persisted, but an in-memory StationController
-        record is not. On a new StepCode=4, restore only the frozen calibration
-        selection; the monitor still performs no PLC/ATEQ start write.
+        One path for both stages, for retries after an unexpected result and
+        after a restart.  A finished sample cycle is archived first; a faulted
+        cycle is left for the operator's reset so its recovery record survives.
         """
         calibration = self.calibration[card.station]
         controller = card.controller
         if (not calibration.validation_started
                 or calibration.phase not in (CalibrationPhase.WAIT_NG,
-                                             CalibrationPhase.WAIT_OK)
-                or controller.record is not None
-                or controller.phase is not Phase.IDLE):
+                                             CalibrationPhase.WAIT_OK)):
+            return False
+        if controller.phase is Phase.FAULT:
+            self._live_trace(
+                f"CAL_SAMPLE_CYCLE_BLOCKED station={card.station.value} "
+                f"reason=fault_reset_required")
+            return False
+        if controller.phase not in (Phase.IDLE, Phase.COMPLETE):
             return False
         part_no = card.part_no.currentText().strip()
         if not part_no:
             self._live_trace(
-                f"CAL_CYCLE_RESTORE_BLOCKED station={card.station.value} no selected model")
+                f"CAL_SAMPLE_CYCLE_BLOCKED station={card.station.value} no selected model")
+            return False
+        if self._single_mode_marking_unsupported(card, sample=True):
+            self._live_trace(
+                f"CAL_SAMPLE_CYCLE_BLOCKED station={card.station.value} "
+                f"reason=single_mode_unsupported")
             return False
         try:
             config = self._model_for(part_no)
         except Exception as exc:
             self._live_trace(
-                f"CAL_CYCLE_RESTORE_BLOCKED station={card.station.value} "
+                f"CAL_SAMPLE_CYCLE_BLOCKED station={card.station.value} "
                 f"{type(exc).__name__}: {exc}")
             return False
-        if self._single_mode_marking_unsupported(card, sample=True):
+        if controller.phase is Phase.COMPLETE:
+            previous = controller.record.cycle_id if controller.record is not None else ""
+            controller.reset()
             self._live_trace(
-                f"CAL_CYCLE_RESTORE_BLOCKED station={card.station.value} "
-                f"reason=single_mode_unsupported")
-            return False
+                f"CAL_SAMPLE_CYCLE_ARCHIVED station={card.station.value} cycle={previous}")
         selection = CycleSelection(card.station, part_no,
                                    card.staff.currentText().strip() or "Operator",
-                                   "single", str(config.ateq_program),
+                                   calibration.test_mode, str(config.ateq_program),
                                    date_scheme=self._resolved_date_scheme(config))
         controller.start_cycle(selection, sample=True)
         card.refresh()
         self._live_trace(
-            f"CAL_CYCLE_RESTORED station={card.station.value} "
-            f"sample={calibration.sample_demand} cycle={controller.record.cycle_id}")
-        return True
-
-    def _begin_ok_validation_cycle(self, card) -> bool:
-        """Bridge NG -> OK validation: archive the NG cycle and start the OK one.
-
-        NG 通过后控制器停在“完成”，而 OK 样件需要一个新测试周期。PLC 上升沿
-        在派发前先走这里。故障相位也接受：先尝试复位归档。
-        This bridge runs only when a new StepCode=4 arrives.
-        """
-        calibration = self.calibration[card.station]
-        if not (calibration.validation_started
-                and calibration.phase is CalibrationPhase.WAIT_OK
-                and card.controller.phase in (Phase.COMPLETE, Phase.FAULT, Phase.IDLE)):
-            return False
-        part_no = card.part_no.currentText().strip()
-        if not part_no:
-            return False
-        if self._single_mode_marking_unsupported(card, sample=True):
-            self._live_trace(
-                f"CAL_OK_BRIDGE_BLOCKED station={card.station.value} "
-                f"reason=single_mode_unsupported")
-            return False
-        if card.controller.record is not None or card.controller.phase is Phase.FAULT:
-            try:
-                card.controller.reset()
-            except Exception as exc:
-                self._live_trace(
-                    f"CAL_OK_BRIDGE_RESET_FAILED {type(exc).__name__}: {exc}")
-                return False
-        try:
-            config = self._model_for(part_no)
-        except Exception as exc:
-            self._live_trace(
-                f"CAL_OK_BRIDGE_MODEL_FAILED station={card.station.value} "
-                f"{type(exc).__name__}: {exc}")
-            return False
-        selection = CycleSelection(card.station, part_no,
-                                   card.staff.currentText().strip() or "Operator",
-                                   "single", str(config.ateq_program),
-                                   date_scheme=self._resolved_date_scheme(config))
-        card.controller.start_cycle(selection, sample=True)
-        card.refresh()
-        self._live_trace(
-            f"CAL_OK_CYCLE_READY station={card.station.value} "
-            f"cycle={card.controller.record.cycle_id}")
+            f"CAL_SAMPLE_CYCLE_READY station={card.station.value} "
+            f"stage={calibration.sample_demand} mode={calibration.test_mode} "
+            f"cycle={controller.record.cycle_id}")
         return True
 
     def _model_for(self, part_no: str) -> ModelConfig:
