@@ -4,12 +4,17 @@ from datetime import datetime, timezone
 from enum import Enum
 import time
 
-from .models import StationId
+from .models import Result, StationId
 
 class CalibrationPhase(str, Enum):
     WAIT_NG = "等待NG样件"
     WAIT_OK = "等待OK样件"
     COMPLETE = "校准完成"
+
+class SampleVerdict(str, Enum):
+    PASSED = "符合预期"
+    UNEXPECTED = "不符合预期"
+    INCOMPLETE = "未测完"
 
 class Calibration:
     def __init__(self, required_samples: int = 1, station: StationId | None = None,
@@ -20,6 +25,7 @@ class Calibration:
         self.required_samples = required_samples
         self.ng_count = self.ok_count = 0
         self.sample_demand = "NG"
+        self.test_mode = "dual"
         # ``countdown`` remains the NG/OK sample-count compatibility field.
         # The production interval uses a separate monotonic timer so a
         # two-hour setting is not confused with the two validation samples.
@@ -85,12 +91,15 @@ class Calibration:
             return True
         return False
 
-    def begin_validation(self) -> None:
-        """Arm the NG -> OK validation before production or after a cycle."""
+    def begin_validation(self, test_mode: str = "dual") -> None:
+        """Arm the NG -> OK validation and freeze the station's test mode."""
         if not self.due:
             raise RuntimeError("当前未到校准周期")
         if self._clear_pending:
             raise RuntimeError("校准已完成，等待下一周期清除状态")
+        if test_mode not in ("single", "dual"):
+            raise ValueError("校准检测模式必须是 single 或 dual")
+        self.test_mode = test_mode
         self.phase = CalibrationPhase.WAIT_NG
         self.ng_count = self.ok_count = 0
         self.sample_demand = "NG"
@@ -177,3 +186,28 @@ class Calibration:
         self.audit_events.append({"actor": actor, "reason": reason.strip(),
                                   "station": self.station.value if self.station else "",
                                   "time": datetime.now(timezone.utc).isoformat()})
+
+
+def judge_sample(phase: CalibrationPhase, test_mode: str,
+                 first: Result | None, second: Result | None) -> SampleVerdict:
+    """Judge one NG/OK sample cycle from its chamber results.
+
+    The hardware fixes the chamber order: first = negative, second = positive.
+    A first-chamber NG makes the instrument stop, so ``second`` only matters
+    after a first-chamber OK in dual mode.  The sample passes when the cycle's
+    final result equals the stage's expected result.
+    """
+    if phase not in (CalibrationPhase.WAIT_NG, CalibrationPhase.WAIT_OK):
+        raise ValueError("当前不在样件验证阶段")
+    if test_mode not in ("single", "dual"):
+        raise ValueError("校准检测模式必须是 single 或 dual")
+    if first is None:
+        return SampleVerdict.INCOMPLETE
+    if first is Result.NG or test_mode == "single":
+        final = first
+    elif second is None:
+        return SampleVerdict.INCOMPLETE
+    else:
+        final = second
+    expected = Result.NG if phase is CalibrationPhase.WAIT_NG else Result.OK
+    return SampleVerdict.PASSED if final is expected else SampleVerdict.UNEXPECTED

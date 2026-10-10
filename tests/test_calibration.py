@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.calibration import Calibration, CalibrationPhase
-from app.models import StationId
+from app.calibration import Calibration, CalibrationPhase, SampleVerdict, judge_sample
+from app.models import Result, StationId
 
 
 def make_cal() -> Calibration:
@@ -96,3 +96,55 @@ def test_indicators_visibility():
     assert cal.indicators == (True, True, True)
     cal.clear_after_resume()
     assert cal.indicators == (False, False, False)
+
+
+def test_begin_validation_freezes_mode():
+    cal = make_cal()
+    cal.begin_validation("single")
+    assert cal.test_mode == "single"
+    default = make_cal()
+    default.begin_validation()
+    # 现场为双测：不传参数时按双测冻结。
+    assert default.test_mode == "dual"
+
+
+def test_begin_validation_rejects_unknown_mode():
+    cal = make_cal()
+    with pytest.raises(ValueError, match="single 或 dual"):
+        cal.begin_validation("triple")
+    assert cal.validation_started is False
+
+
+W_NG, W_OK = CalibrationPhase.WAIT_NG, CalibrationPhase.WAIT_OK
+OK, NG = Result.OK, Result.NG
+PASSED, UNEXPECTED, INCOMPLETE = (SampleVerdict.PASSED, SampleVerdict.UNEXPECTED,
+                                  SampleVerdict.INCOMPLETE)
+
+
+@pytest.mark.parametrize("phase, mode, first, second, expected", [
+    (W_NG, "dual", NG, None, PASSED),
+    (W_NG, "single", NG, None, PASSED),
+    (W_NG, "dual", OK, None, INCOMPLETE),
+    (W_NG, "dual", OK, NG, PASSED),       # 只看最终结果
+    (W_NG, "dual", OK, OK, UNEXPECTED),
+    (W_NG, "single", OK, None, UNEXPECTED),
+    (W_OK, "single", OK, None, PASSED),
+    (W_OK, "dual", OK, None, INCOMPLETE),
+    (W_OK, "dual", OK, OK, PASSED),
+    (W_OK, "dual", NG, None, UNEXPECTED),
+    (W_OK, "single", NG, None, UNEXPECTED),
+    (W_OK, "dual", OK, NG, UNEXPECTED),
+])
+def test_judge_sample_table(phase, mode, first, second, expected):
+    assert judge_sample(phase, mode, first, second) is expected
+
+
+def test_judge_sample_without_first_result_is_incomplete():
+    assert judge_sample(W_NG, "dual", None, None) is INCOMPLETE
+
+
+def test_judge_sample_outside_validation_rejected():
+    with pytest.raises(ValueError, match="样件验证阶段"):
+        judge_sample(CalibrationPhase.COMPLETE, "dual", OK, OK)
+    with pytest.raises(ValueError, match="single 或 dual"):
+        judge_sample(W_NG, "triple", NG, None)
