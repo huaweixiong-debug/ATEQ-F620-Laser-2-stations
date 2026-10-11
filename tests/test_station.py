@@ -125,6 +125,42 @@ def test_sample_cycle_marks_when_enabled(tmp_path):
     assert controller.phase is Phase.MARKING
 
 
+def test_sample_dual_first_ok_waits_for_positive(station_parts):
+    """OK 样件与正常产品同一时序：负压 OK 后必须等正压，不能提前结束。"""
+    controller, repository, marker, plc, _ = station_parts
+    controller.start_cycle(make_selection(mode="dual"), sample=True)
+    controller.ateq.result = Result.OK
+    controller.test_first()
+    assert controller.phase is Phase.WAIT_2
+    controller.test_second()
+    assert controller.phase is Phase.COMPLETE
+    assert controller.record.second.result is Result.OK
+    assert marker.intents == set()
+
+
+def test_sample_dual_first_ng_ends_without_second(station_parts):
+    controller, repository, marker, plc, _ = station_parts
+    controller.start_cycle(make_selection(mode="dual"), sample=True)
+    controller.ateq.result = Result.NG
+    controller.test_first()
+    assert controller.phase is Phase.COMPLETE
+    with pytest.raises(RuntimeError, match="当前状态"):
+        controller.test_second()
+    assert marker.intents == set()
+
+
+def test_sample_dual_second_fault_enters_fault(station_parts):
+    controller, repository, marker, plc, _ = station_parts
+    controller.start_cycle(make_selection(mode="dual"), sample=True)
+    controller.test_first()
+    controller.ateq.connected = False
+    with pytest.raises(ConnectionError):
+        controller.test_second()
+    assert controller.phase is Phase.FAULT
+    assert controller.recovery_required is True
+    assert marker.intents == set()
+
+
 def test_start_cycle_requires_idle_and_matching_station(station_parts):
     controller, *_ = station_parts
     controller.start_cycle(make_selection(mode="dual"))

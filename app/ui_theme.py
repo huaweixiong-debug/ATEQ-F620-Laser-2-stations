@@ -113,6 +113,8 @@ class UiTextCatalog:
         "mark_error": {"中文": "打码错误：{error}", "English": "Marking error: {error}", "Français": "Erreur marquage : {error}"},
         "label_error": {"中文": "贴标错误：{error}", "English": "Label error: {error}", "Français": "Erreur étiquette : {error}"},
         "calibration_error": {"中文": "校准验证拒绝：{error}", "English": "Calibration validation denied: {error}", "Français": "Validation de calibration refusée : {error}"},
+        "sample_expected_ng": {"中文": "样件验证不符合预期：要求 NG，实际 OK；请重新放 NG 首件测试", "English": "Sample check failed: expected NG, got OK; retest the NG first piece", "Français": "Échantillon non conforme : NG attendu, OK obtenu ; retestez la pièce NG"},
+        "sample_expected_ok": {"中文": "样件验证不符合预期：要求 OK，实际 NG；请重新放 OK 二件，从负压开始重测", "English": "Sample check failed: expected OK, got NG; retest the OK second piece from the negative chamber", "Français": "Échantillon non conforme : OK attendu, NG obtenu ; retestez la pièce OK depuis la chambre négative"},
         "single_mode_unsupported": {
             "中文": "单测打码未启用：请切换 Dual Test / 双测 后重新启动周期（数据库结构审批前禁止单测打码）",
             "English": "Single-mode marking is not enabled: switch to Dual Test before starting the cycle (pending schema approval)",
