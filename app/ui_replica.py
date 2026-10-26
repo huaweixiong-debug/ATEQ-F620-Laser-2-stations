@@ -372,9 +372,9 @@ class StationPanel(QFrame):
             self.model_config = self.model_provider(self.part_no.currentText().strip())
             self.ateq_no.setText(str(self.model_config.ateq_program))
             if isinstance(self.controller.ateq, SerialAteq):
-                if self.controller.phase is not Phase.IDLE:
+                if self.controller.phase not in (Phase.IDLE, Phase.COMPLETE):
                     # 周期进行中不写 ATEQ 程序（周期启动时会按冻结型号选择），
-                    # 也不显示 ERR：界面上的型号变更不应打断运行中的周期。
+                    # 完整周期已结束则允许立即切换；运行中变更不显示 ERR。
                     trace = getattr(self.window(), "_live_trace", None)
                     if trace is not None:
                         trace(f"ATEQ_PROGRAM_SYNC_DEFERRED station={self.station.value} "
